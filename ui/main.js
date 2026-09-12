@@ -1,8 +1,12 @@
 // Wenyi Desktop frontend.
 //
 // All privileged work (dialogs, credentials, engine control) happens in Rust commands.
-// This file only talks to `window.__TAURI__.core.invoke` and listens for `engine-event`,
-// so it needs no bundler and no plugin JS packages.
+// This file only talks to `window.__TAURI__.core.invoke` and listens for events, so it
+// needs no bundler and no plugin JS packages.
+//
+// Motion/feedback notes: progress is written straight through to a compositor-friendly
+// transform (no tweening that could lag behind the engine), and announcements to
+// assistive tech are throttled to meaningful moments rather than every progress tick.
 
 const invoke = window.__TAURI__?.core?.invoke;
 const listen = window.__TAURI__?.event?.listen;
@@ -14,6 +18,7 @@ const state = {
   lastOutputs: [],
   paths: null,
   settings: null,
+  running: false,
 };
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
@@ -28,12 +33,6 @@ function clearLog() {
   $("log").textContent = "";
 }
 
-function setStatus(message, kind = "muted") {
-  const el = $("settings-status");
-  el.textContent = message;
-  el.className = kind;
-}
-
 function baseName(path) {
   return path.split(/[\\/]/).pop() || path;
 }
@@ -44,16 +43,67 @@ function dirName(path) {
   return parts.join("\\");
 }
 
+let savedTimer = null;
+
+/** Transient confirmation that settings were persisted, without stealing focus. */
+function flashSaved(text = "已保存") {
+  const pill = $("saved-pill");
+  pill.textContent = text;
+  pill.classList.add("visible");
+  clearTimeout(savedTimer);
+  savedTimer = setTimeout(() => pill.classList.remove("visible"), 1600);
+}
+
+/** Announce only meaningful transitions; per-batch updates would flood a screen reader. */
+function announce(message) {
+  $("announcer").textContent = message;
+}
+
 async function call(command, args = {}) {
   if (!invoke) throw new Error("请在 Tauri 容器中运行（tauri dev 或打包后的应用）。");
   return invoke(command, args);
 }
 
+// ── Progress ──────────────────────────────────────────────────────────────────
+
+/**
+ * Drive the bar from a 0..1 ratio.
+ * @param {number|null} ratio null renders an indeterminate track.
+ */
+function setProgress(ratio) {
+  const fill = $("progress-fill");
+  const track = $("progress-track");
+  const indeterminate = ratio === null;
+  track.classList.toggle("indeterminate", indeterminate);
+  if (indeterminate) {
+    // Indeterminate: no honest number exists yet, so do not invent one. The track
+    // travels instead, which reads as working rather than frozen.
+    fill.style.removeProperty("--p");
+    track.removeAttribute("aria-valuenow");
+    return;
+  }
+  const clamped = Math.max(0, Math.min(1, ratio));
+  fill.style.setProperty("--p", String(clamped));
+  track.setAttribute("aria-valuenow", String(Math.round(clamped * 100)));
+}
+
+function setRunning(running) {
+  state.running = running;
+  $("cancel").disabled = !running;
+  $("run").disabled = running;
+  $("prepare").disabled = running;
+}
+
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
-function selectTab(name) {
+function selectTab(name, { focus = false } = {}) {
   for (const tab of document.querySelectorAll(".tab")) {
-    tab.classList.toggle("active", tab.dataset.tab === name);
+    const selected = tab.dataset.tab === name;
+    tab.classList.toggle("active", selected);
+    tab.setAttribute("aria-selected", String(selected));
+    // Roving tabindex: only the active tab is in the tab order.
+    tab.tabIndex = selected ? 0 : -1;
+    if (selected && focus) tab.focus();
   }
   for (const panel of document.querySelectorAll(".panel")) {
     panel.classList.toggle("active", panel.id === `panel-${name}`);
@@ -103,7 +153,7 @@ function readSettingsFromForm() {
     review: $("review").checked,
     bookUnderstanding: $("book-understanding").checked,
     bilingual: $("bilingual").checked,
-    // The engine always writes a monolingual edition; the checkbox pair only adds one.
+    // The engine always writes a monolingual edition; the checkbox only adds one.
     mono: true,
   };
 }
@@ -111,15 +161,19 @@ function readSettingsFromForm() {
 function syncProviderFields() {
   const provider = $("provider").value;
   $("custom-fields").hidden = provider !== "custom";
-  const label = provider === "gemini" ? "Gemini API Key" : "DeepSeek API Key";
   $("key-label").textContent =
-    provider === "custom" ? "自定义接口密钥（本地模型可留空不设置）" : label;
+    provider === "custom"
+      ? "自定义接口密钥（本地模型可留空不设置）"
+      : provider === "gemini"
+        ? "Gemini API Key"
+        : "DeepSeek API Key";
   refreshKeyStatus();
 }
 
 async function refreshKeyStatus() {
   const account = currentKeyAccount();
   const badge = $("key-status");
+  updateSaveKeyButton();
   if (!account) {
     badge.textContent = "无需密钥";
     badge.className = "badge ok";
@@ -128,7 +182,7 @@ async function refreshKeyStatus() {
   try {
     const status = await call("api_key_status", { accounts: [account] });
     if (status[account]) {
-      badge.textContent = "已保存到系统凭据库";
+      badge.textContent = "已存入凭据库";
       badge.className = "badge ok";
     } else {
       badge.textContent = "未设置";
@@ -141,38 +195,43 @@ async function refreshKeyStatus() {
   }
 }
 
-async function saveSettings({ quiet = false } = {}) {
+/** Inline affordance: the button is only actionable once there is something to save. */
+function updateSaveKeyButton() {
+  $("save-key").disabled = !currentKeyAccount() || !$("api-key").value.trim();
+}
+
+async function saveSettings({ quiet = true } = {}) {
   try {
     state.settings = readSettingsFromForm();
-    const paths = await call("save_settings", { settings: state.settings });
-    state.paths = paths;
-    renderPaths(paths);
-    if (!quiet) setStatus("已保存 · " + new Date().toLocaleTimeString(), "ok");
+    state.paths = await call("save_settings", { settings: state.settings });
+    renderPaths(state.paths);
+    if (quiet) {
+      flashSaved();
+    } else {
+      flashSaved("已保存");
+    }
     return true;
   } catch (error) {
-    setStatus("保存失败: " + error, "error");
+    flashSaved("保存失败");
+    log("保存设置失败: " + error);
     return false;
   }
 }
 
 async function saveApiKey() {
   const account = currentKeyAccount();
-  const secret = $("api-key").value;
-  if (!account) {
-    setStatus("该提供方不需要密钥。", "muted");
-    return;
-  }
-  if (!secret.trim()) {
-    setStatus("请先输入密钥。", "error");
-    return;
-  }
+  const secret = $("api-key").value.trim();
+  if (!account) return;
+  if (!secret) return;
   try {
-    await call("set_api_key", { account, secret: secret.trim() });
+    await call("set_api_key", { account, secret });
     $("api-key").value = "";
-    setStatus("密钥已存入系统凭据库。", "ok");
+    updateSaveKeyButton();
+    flashSaved("密钥已保存");
     await refreshKeyStatus();
   } catch (error) {
-    setStatus("保存密钥失败: " + error, "error");
+    log("保存密钥失败: " + error);
+    flashSaved("密钥保存失败");
   }
 }
 
@@ -181,10 +240,10 @@ async function clearApiKey() {
   if (!account) return;
   try {
     await call("clear_api_key", { account });
-    setStatus("已清除保存的密钥。", "ok");
+    flashSaved("密钥已清除");
     await refreshKeyStatus();
   } catch (error) {
-    setStatus("清除失败: " + error, "error");
+    log("清除失败: " + error);
   }
 }
 
@@ -220,10 +279,12 @@ async function startRun(command) {
   clearLog();
   $("output-actions").hidden = true;
   state.lastOutputs = [];
+  setProgress(0);
+  setRunning(true);
   log(`启动 ${command} …`);
 
   // Persist settings first: the engine's config.yaml is regenerated from them.
-  if (!(await saveSettings({ quiet: true }))) return;
+  await saveSettings();
 
   const ephemeral = $("api-key").value.trim();
   try {
@@ -238,7 +299,9 @@ async function startRun(command) {
   } catch (error) {
     log("错误: " + error);
     $("progress-label").textContent = "启动失败";
+    announce("启动失败");
   } finally {
+    setRunning(false);
     refreshRuns();
   }
 }
@@ -248,22 +311,25 @@ function handleEvent(payload) {
   switch (payload.event) {
     case "started":
       $("progress-label").textContent = "已启动…";
+      setProgress(null);
+      announce("翻译已启动");
       break;
     case "stage":
       $("progress-label").textContent = payload.label || "";
+      setProgress(null);
+      if (payload.label) announce(payload.label);
       break;
     case "progress": {
       const total = payload.total || 0;
       const done = payload.done || 0;
-      $("progress-fill").style.width = total > 0 ? `${Math.round((done / total) * 100)}%` : "0%";
+      setProgress(total > 0 ? done / total : null);
       $("progress-label").textContent =
         `${payload.label || ""}${total > 0 ? ` (${done}/${total})` : ""}`;
       break;
     }
     case "usage": {
       // The engine serialises its Python usage ledger verbatim: snake_case keys.
-      const totals = payload.usage?.totals;
-      const tokens = totals?.total_tokens;
+      const tokens = payload.usage?.totals?.total_tokens;
       log(`用量：${typeof tokens === "number" ? tokens.toLocaleString() : "?"} tokens`);
       break;
     }
@@ -272,13 +338,15 @@ function handleEvent(payload) {
         state.lastOutputs = payload.outputs;
         $("output-actions").hidden = false;
       }
-      $("progress-fill").style.width = "100%";
+      setProgress(1);
       $("progress-label").textContent = "完成";
       log("完成：" + (payload.outputs || []).join(", "));
+      announce("翻译完成");
       break;
     case "error":
       $("progress-label").textContent = "失败";
       log("出错：" + (payload.message || JSON.stringify(payload)));
+      announce("翻译失败");
       break;
     case "terminated":
       log(`引擎退出，退出码 ${payload.exitCode}`);
@@ -300,32 +368,36 @@ async function refreshRuns() {
     const runs = await call("list_runs");
     if (!runs.length) {
       container.innerHTML = '<p class="muted">还没有运行记录。</p>';
+      // Announce a short summary rather than the whole list.
+      announce("没有未完成的翻译");
       return;
     }
+    const unfinished = runs.filter((r) => r.hasState && r.chaptersDone < r.chaptersTotal).length;
+    announce(`${runs.length} 条运行记录，其中 ${unfinished} 条未完成`);
     container.innerHTML = runs
       .map((run, index) => {
-        const pct =
-          run.chaptersTotal > 0 ? Math.round((run.chaptersDone / run.chaptersTotal) * 100) : 0;
+        const ratio =
+          run.chaptersTotal > 0 ? Math.min(1, run.chaptersDone / run.chaptersTotal) : 0;
         const progress = run.hasState
           ? `${run.chaptersDone}/${run.chaptersTotal} 章`
           : "尚无状态";
         const title = run.title || baseName(run.input);
         const missing = run.inputExists ? "" : ' <span class="badge missing">文件缺失</span>';
         const openBtn = run.outputs.length
-          ? `<button class="ghost" data-open="${index}">打开译文</button>`
+          ? `<button class="ghost small" data-open="${index}">打开译文</button>`
           : "";
         return `
           <div class="run-row">
             <div class="run-main">
-              <div class="run-title">${title}${missing}</div>
-              <div class="muted run-path" title="${run.input}">${run.input}</div>
+              <div class="run-title">${escapeHtml(title)}${missing}</div>
+              <div class="muted run-path" title="${escapeHtml(run.input)}">${escapeHtml(run.input)}</div>
               <div class="run-progress">
-                <div class="progress-bar small"><div style="width:${pct}%"></div></div>
+                <div class="progress-bar small"><div class="fill" style="--p:${ratio}"></div></div>
                 <span class="muted">${progress}${run.targetLang ? ` · ${run.targetLang}` : ""}</span>
               </div>
             </div>
             <div class="run-actions">
-              <button class="primary" data-resume="${index}" ${run.inputExists ? "" : "disabled"}>
+              <button class="primary small" data-resume="${index}" ${run.inputExists ? "" : "disabled"}>
                 继续翻译
               </button>
               ${openBtn}
@@ -337,8 +409,7 @@ async function refreshRuns() {
     container.querySelectorAll("[data-resume]").forEach((button) => {
       button.addEventListener("click", () => {
         const run = runs[Number(button.dataset.resume)];
-        state.input = run.input;
-        $("file-name").textContent = run.input;
+        setInput(run.input);
         selectTab("translate");
         startRun("translate");
       });
@@ -354,39 +425,90 @@ async function refreshRuns() {
       });
     });
   } catch (error) {
-    container.innerHTML = `<p class="muted">读取运行记录失败：${error}</p>`;
+    container.innerHTML = `<p class="muted">读取运行记录失败：${escapeHtml(String(error))}</p>`;
   }
 }
 
-// ── Wiring ────────────────────────────────────────────────────────────────────
+/** Paths come from the filesystem and are interpolated into HTML, so escape them. */
+function escapeHtml(value) {
+  return String(value).replace(
+    /[&<>"']/g,
+    (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]
+  );
+}
+
+// ── Input selection ───────────────────────────────────────────────────────────
+
+function setInput(path) {
+  state.input = path;
+  const name = $("file-name");
+  name.textContent = path;
+  name.title = path;
+  $("open-input-dir").disabled = false;
+}
 
 async function chooseFile() {
   try {
     const picked = await call("pick_input_file");
     if (picked) {
-      state.input = picked;
-      $("file-name").textContent = picked;
-      $("open-input-dir").disabled = false;
+      setInput(picked);
       log("已选择: " + picked);
+      announce("已选择文件 " + baseName(picked));
     }
   } catch (error) {
     log("选择文件失败: " + error);
   }
 }
 
+// ── Wiring ────────────────────────────────────────────────────────────────────
+
+const AUTO_SAVE_IDS = [
+  "source-lang",
+  "target-lang",
+  "polish",
+  "review",
+  "book-understanding",
+  "bilingual",
+  "proxy",
+  "custom-base-url",
+  "custom-model",
+];
+
 async function init() {
   document.querySelectorAll(".tab").forEach((tab) => {
     tab.addEventListener("click", () => selectTab(tab.dataset.tab));
+    // Standard tablist keyboard behaviour: arrows move between tabs.
+    tab.addEventListener("keydown", (event) => {
+      const order = ["translate", "resume", "settings"];
+      const current = order.indexOf(tab.dataset.tab);
+      let next = null;
+      if (event.key === "ArrowRight") next = (current + 1) % order.length;
+      if (event.key === "ArrowLeft") next = (current - 1 + order.length) % order.length;
+      if (event.key === "Home") next = 0;
+      if (event.key === "End") next = order.length - 1;
+      if (next !== null) {
+        event.preventDefault();
+        selectTab(order[next], { focus: true });
+      }
+    });
   });
 
-  $("pick-file").addEventListener("click", chooseFile);
-  $("drop-zone").addEventListener("click", chooseFile);
+  const dropZone = $("drop-zone");
+  dropZone.addEventListener("click", chooseFile);
+  dropZone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      chooseFile();
+    }
+  });
+
   $("run").addEventListener("click", () => startRun("translate"));
   $("prepare").addEventListener("click", () => startRun("prepare"));
   $("cancel").addEventListener("click", async () => {
     try {
       await call("cancel");
       log("已请求取消。");
+      announce("已请求取消");
     } catch (error) {
       log("取消失败: " + error);
     }
@@ -428,27 +550,40 @@ async function init() {
 
   $("provider").addEventListener("change", () => {
     syncProviderFields();
-    saveSettings({ quiet: true });
+    saveSettings();
   });
+  // Selecting a URL in the key field is common for local endpoints with no key.
+  $("custom-key-env").addEventListener("change", () => {
+    updateSaveKeyButton();
+    refreshKeyStatus();
+    saveSettings();
+  });
+  $("api-key").addEventListener("input", updateSaveKeyButton);
   $("save-key").addEventListener("click", saveApiKey);
   $("clear-key").addEventListener("click", clearApiKey);
-  $("save-settings").addEventListener("click", () => saveSettings());
   $("refresh-runs").addEventListener("click", refreshRuns);
 
-  // Auto-save the run-affecting switches so the UI and config.yaml never drift.
-  for (const id of [
-    "source-lang",
-    "target-lang",
-    "polish",
-    "review",
-    "book-understanding",
-    "bilingual",
-  ]) {
-    $(id).addEventListener("change", () => saveSettings({ quiet: true }));
+  // `change` fires on blur/Enter, so text fields persist without a debounce timer.
+  for (const id of AUTO_SAVE_IDS) {
+    $(id).addEventListener("change", () => saveSettings());
   }
 
   if (listen) {
     listen("engine-event", (event) => handleEvent(event.payload));
+
+    // Native drag-and-drop: the drop zone hover state tracks enter/over/leave so the
+    // target reacts continuously while the file is held over it.
+    listen("drag-state", (event) => {
+      dropZone.classList.toggle("active", Boolean(event.payload?.active));
+    });
+    listen("file-dropped", (event) => {
+      const path = event.payload?.path;
+      if (!path) return;
+      dropZone.classList.remove("active");
+      setInput(path);
+      log("已拖入: " + path);
+      announce("已选择文件 " + baseName(path));
+    });
   }
 
   try {
@@ -460,6 +595,8 @@ async function init() {
   } catch (error) {
     log("初始化失败: " + error);
   }
+
+  setRunning(false);
 }
 
 window.addEventListener("DOMContentLoaded", init);

@@ -310,6 +310,28 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_fs::init())
+        // Native file drag-and-drop. The drop zone advertises dragging, so it has to
+        // actually work — and the hover state must track enter/leave continuously, not
+        // only fire on drop.
+        .on_window_event(|window, event| match event {
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Enter { .. })
+            | tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Over { .. }) => {
+                let _ = window.emit("drag-state", serde_json::json!({"active": true}));
+            }
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Leave) => {
+                let _ = window.emit("drag-state", serde_json::json!({"active": false}));
+            }
+            tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
+                let _ = window.emit("drag-state", serde_json::json!({"active": false}));
+                if let Some(path) = paths.first() {
+                    let _ = window.emit(
+                        "file-dropped",
+                        serde_json::json!({"path": path.to_string_lossy()}),
+                    );
+                }
+            }
+            _ => {}
+        })
         .invoke_handler(tauri::generate_handler![
             get_paths,
             load_settings,

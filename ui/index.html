@@ -7,35 +7,83 @@
     <link rel="stylesheet" href="style.css" />
   </head>
   <body>
-    <header>
+    <header class="chrome">
       <div class="brand">
         <h1>Wenyi</h1>
         <p class="tagline">Carry stories across languages</p>
       </div>
-      <nav class="tabs" role="tablist">
-        <button class="tab active" data-tab="translate" role="tab">翻译</button>
-        <button class="tab" data-tab="resume" role="tab">续跑</button>
-        <button class="tab" data-tab="settings" role="tab">设置</button>
-      </nav>
+      <div class="header-right">
+        <span id="saved-pill" class="pill" role="status" aria-live="polite"></span>
+        <nav class="tabs" role="tablist" aria-label="主导航">
+          <button
+            class="tab active"
+            id="tab-translate"
+            data-tab="translate"
+            role="tab"
+            aria-selected="true"
+            aria-controls="panel-translate"
+          >
+            翻译
+          </button>
+          <button
+            class="tab"
+            id="tab-resume"
+            data-tab="resume"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-resume"
+            tabindex="-1"
+          >
+            续跑
+          </button>
+          <button
+            class="tab"
+            id="tab-settings"
+            data-tab="settings"
+            role="tab"
+            aria-selected="false"
+            aria-controls="panel-settings"
+            tabindex="-1"
+          >
+            设置
+          </button>
+        </nav>
+      </div>
     </header>
 
     <main>
       <!-- ── Translate ─────────────────────────────────────────────── -->
-      <section class="panel active" id="panel-translate">
+      <section
+        class="panel active"
+        id="panel-translate"
+        role="tabpanel"
+        aria-labelledby="tab-translate"
+        tabindex="0"
+      >
         <div class="card">
           <h2>1 · 选择书籍</h2>
-          <div class="row">
-            <button id="pick-file" class="primary">选择文件</button>
-            <button id="open-input-dir" class="ghost" disabled>打开所在文件夹</button>
+          <div
+            id="drop-zone"
+            class="drop-zone"
+            role="button"
+            tabindex="0"
+            aria-label="选择文件，或把书籍文件拖入此处"
+          >
+            <span class="drop-icon" aria-hidden="true">＋</span>
+            <span class="drop-title">把书籍拖到这里</span>
+            <span class="drop-hint">或点击选择 · EPUB / FB2 / TXT / Markdown / HTML / PDF / DOCX / SRT</span>
           </div>
-          <div id="drop-zone">或把 .epub / .docx / .txt / .srt / .pdf 拖入窗口</div>
-          <div id="file-name" class="muted">未选择文件</div>
+          <div class="file-row">
+            <span id="file-name" class="muted">未选择文件</span>
+            <button id="open-input-dir" class="ghost small" disabled>打开所在文件夹</button>
+          </div>
         </div>
 
         <div class="card">
           <h2>2 · 翻译设置</h2>
           <div class="row">
-            <label>源语言
+            <label
+              >源语言
               <select id="source-lang">
                 <option value="auto">自动检测</option>
                 <option value="en">英语</option>
@@ -47,7 +95,8 @@
                 <option value="de">德语</option>
               </select>
             </label>
-            <label>目标语言
+            <label
+              >目标语言
               <select id="target-lang">
                 <option value="zh">简体中文</option>
                 <option value="zh-Hant">繁体中文</option>
@@ -62,7 +111,6 @@
             <label><input type="checkbox" id="book-understanding" /> 全书预扫</label>
             <label><input type="checkbox" id="bilingual" /> 双语对照版</label>
           </div>
-          <p class="muted" id="config-note">设置会自动保存并在每次运行时生效。</p>
         </div>
 
         <div class="card">
@@ -70,29 +118,45 @@
           <div class="row">
             <button id="run" class="primary">开始 / 继续翻译</button>
             <button id="prepare">仅准备（预扫）</button>
-            <button id="cancel" class="danger">取消</button>
+            <button id="cancel" class="danger" disabled>取消</button>
           </div>
           <div class="progress-wrap">
-            <div class="progress-bar"><div id="progress-fill"></div></div>
+            <div
+              id="progress-track"
+              class="progress-bar"
+              role="progressbar"
+              aria-valuemin="0"
+              aria-valuemax="100"
+              aria-valuenow="0"
+              aria-label="翻译进度"
+            >
+              <div id="progress-fill" class="fill"></div>
+            </div>
             <div id="progress-label" class="muted">等待开始…</div>
           </div>
-          <div class="row" id="output-actions" hidden>
-            <span class="muted">产物：</span>
-            <button id="open-output" class="ghost">打开译文</button>
-            <button id="open-output-dir" class="ghost">打开输出目录</button>
+          <div class="row output-actions" id="output-actions" hidden>
+            <span class="muted">产物</span>
+            <button id="open-output" class="ghost small">打开译文</button>
+            <button id="open-output-dir" class="ghost small">打开输出目录</button>
           </div>
-          <pre id="log"></pre>
+          <pre id="log" aria-label="运行日志"></pre>
         </div>
       </section>
 
       <!-- ── Resume ────────────────────────────────────────────────── -->
-      <section class="panel" id="panel-resume">
+      <section
+        class="panel"
+        id="panel-resume"
+        role="tabpanel"
+        aria-labelledby="tab-resume"
+        tabindex="0"
+      >
         <div class="card">
           <div class="row space-between">
             <h2>未完成的翻译</h2>
-            <button id="refresh-runs" class="ghost">刷新</button>
+            <button id="refresh-runs" class="ghost small">刷新</button>
           </div>
-          <p class="muted">
+          <p class="muted note">
             按文件内容（SHA-256）匹配引擎状态，改名或移动后依然可以续跑。
           </p>
           <div id="runs-list"><p class="muted">加载中…</p></div>
@@ -100,11 +164,18 @@
       </section>
 
       <!-- ── Settings ──────────────────────────────────────────────── -->
-      <section class="panel" id="panel-settings">
+      <section
+        class="panel"
+        id="panel-settings"
+        role="tabpanel"
+        aria-labelledby="tab-settings"
+        tabindex="0"
+      >
         <div class="card">
           <h2>模型与密钥</h2>
           <div class="row">
-            <label>模型提供方
+            <label
+              >模型提供方
               <select id="provider">
                 <option value="deepseek">DeepSeek</option>
                 <option value="gemini">Google Gemini</option>
@@ -115,16 +186,19 @@
 
           <div id="custom-fields" hidden>
             <div class="row">
-              <label>接口地址 base_url
-                <input type="text" id="custom-base-url" placeholder="http://localhost:11434/v1" />
+              <label class="grow"
+                >接口地址 base_url
+                <input type="text" id="custom-base-url" placeholder="http://localhost:11434/v1" spellcheck="false" />
               </label>
             </div>
             <div class="row">
-              <label>模型 ID
-                <input type="text" id="custom-model" placeholder="qwen2.5:7b" />
+              <label class="grow"
+                >模型 ID
+                <input type="text" id="custom-model" placeholder="qwen2.5:7b" spellcheck="false" />
               </label>
-              <label>密钥环境变量名（本地模型可留空）
-                <input type="text" id="custom-key-env" placeholder="MY_API_KEY" />
+              <label class="grow"
+                >密钥环境变量名（本地模型可留空）
+                <input type="text" id="custom-key-env" placeholder="MY_API_KEY" spellcheck="false" />
               </label>
             </div>
           </div>
@@ -132,43 +206,48 @@
           <div class="row api-key-row">
             <label class="grow">
               <span id="key-label">DeepSeek API Key</span>
-              <input type="password" id="api-key" placeholder="sk-…（留空表示不修改）" autocomplete="off" />
+              <input
+                type="password"
+                id="api-key"
+                placeholder="sk-…（留空表示不修改已保存的密钥）"
+                autocomplete="off"
+                spellcheck="false"
+                aria-describedby="key-hint"
+              />
             </label>
             <div class="key-actions">
               <span id="key-status" class="badge unknown">检测中…</span>
-              <button id="save-key" class="primary">保存到系统凭据库</button>
-              <button id="clear-key" class="ghost">清除</button>
+              <button id="save-key" class="primary" disabled>存入凭据库</button>
+              <button id="clear-key" class="ghost" title="只删除本机保存的密钥">清除</button>
             </div>
           </div>
-          <p class="muted">
-            密钥保存在操作系统凭据库（Windows 凭据管理器 / macOS 钥匙串），不写入任何配置文件；
-            界面只能读取"是否存在"，无法读回明文。
+          <p id="key-hint" class="muted note">
+            密钥保存在操作系统凭据库（Windows 凭据管理器 / macOS 钥匙串 / Linux kernel keyring），
+            不写入任何配置文件；界面只能读到"是否存在"，无法读回明文。
           </p>
 
           <div class="row">
-            <label class="grow">HTTP 代理（可选，例如 http://127.0.0.1:10808）
-              <input type="text" id="proxy" placeholder="留空表示直连" />
+            <label class="grow"
+              >HTTP 代理（可选，例如 http://127.0.0.1:10808）
+              <input type="text" id="proxy" placeholder="留空表示直连" spellcheck="false" />
             </label>
           </div>
+          <p class="muted note">设置会自动保存，并在下一次运行时生效。</p>
         </div>
 
         <div class="card">
           <h2>存储位置</h2>
           <dl class="kv" id="paths-list"></dl>
           <div class="row">
-            <button id="open-workspace" class="ghost">打开数据目录</button>
-          </div>
-        </div>
-
-        <div class="card">
-          <h2>保存</h2>
-          <div class="row">
-            <button id="save-settings" class="primary">保存设置</button>
-            <span id="settings-status" class="muted"></span>
+            <button id="open-workspace" class="ghost small">打开数据目录</button>
           </div>
         </div>
       </section>
     </main>
+
+    <!-- Announcements are throttled to meaningful moments only, so assistive tech is
+         not flooded by per-batch progress ticks. -->
+    <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
 
     <script src="main.js"></script>
   </body>
