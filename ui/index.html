@@ -132,14 +132,17 @@
             >
               <div id="progress-fill" class="fill"></div>
             </div>
-            <div id="progress-label" class="muted">等待开始…</div>
+            <div class="progress-head">
+              <div id="progress-label" class="muted">等待开始…</div>
+              <div id="progress-percent" class="muted" aria-hidden="true"></div>
+            </div>
           </div>
           <div class="row output-actions" id="output-actions" hidden>
             <span class="muted">产物</span>
             <button id="open-output" class="ghost small">打开译文</button>
             <button id="open-output-dir" class="ghost small">打开输出目录</button>
           </div>
-          <pre id="log" aria-label="运行日志"></pre>
+          <div id="log" class="log" role="log" aria-label="运行日志"></div>
         </div>
       </section>
 
@@ -159,8 +162,7 @@
           <p class="muted note">
             按文件内容（SHA-256）匹配引擎状态，改名或移动后依然可以续跑。
           </p>
-          <div id="runs-list"><p class="muted">加载中…</p></div>
-        </div>
+          <div id="runs-list"><p class="muted">加载中…</p></div>        </div>
       </section>
 
       <!-- ── Settings ──────────────────────────────────────────────── -->

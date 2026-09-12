@@ -15,6 +15,28 @@
 | `sidecar/build_sidecar.ps1` | 用 PyInstaller 打包 `wenyi-core` 引擎 |
 | `scripts/build.ps1` | 一键构建（sidecar + `tauri build`） |
 | `scripts/verify_pipeline.ps1` | **端到端验证**（用本地 mock LLM 跑通整条链路，不需要 API key） |
+| `scripts/preview_ui.ps1` | **渲染 UI 截图**（浏览器内预览真实界面，无需构建应用） |
+
+## 界面预览
+
+![深色](docs/images/ui-dark.png)
+![浅色](docs/images/ui-light.png)
+
+界面对照 Apple 的流体界面与设计基础原则实现，要点：
+
+- **即时响应**：按钮/标签在**指针按下**瞬间反馈，不等松手
+- **材质与层次**：顶栏是半透明浮层（内容从下方滚过），用渐隐代替 1px 硬分隔线；
+  卡片有亮色上边缘，读作"光打在材质上"
+- **字体排版**：字距随字号变化（大标题 `-0.021em` 收紧，正文接近 0），
+  数字使用等宽数字避免跳动，全部用 rem 以便跟随系统字号缩放
+- **明暗双主题**：跟随系统 `prefers-color-scheme`；浅色不是简单反色——
+  品牌藏青作为墨色保留，金色加深以维持对比度
+- **无障碍**：键盘焦点环、完整 tablist 语义、`progressbar` 角色；
+  并响应 `prefers-reduced-motion` / `-transparency` / `-contrast`
+- **反馈分级**：日志按"普通 / 引擎输出 / 错误 / 完成"分色，便于快速扫读
+
+截图由 `.\scripts\preview_ui.ps1` 生成（用无头浏览器渲染真实 `ui/`，
+通过 `scripts/ui_preview_shim.js` 注入示例数据）。
 
 ## 架构一图
 

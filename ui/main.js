@@ -23,9 +23,27 @@ const state = {
 
 // ── Small helpers ─────────────────────────────────────────────────────────────
 
-function log(message) {
+/**
+ * Append one line to the log.
+ * @param {string} message
+ * @param {"info"|"engine"|"error"|"done"} kind drives the line's emphasis.
+ */
+function log(message, kind = "info") {
   const el = $("log");
-  el.textContent += message + "\n";
+  const line = document.createElement("div");
+  line.className = `log-line log-${kind}`;
+
+  const time = document.createElement("span");
+  time.className = "log-time";
+  time.textContent = new Date().toLocaleTimeString(undefined, { hour12: false });
+
+  const text = document.createElement("span");
+  text.className = "log-text";
+  // textContent, never innerHTML: engine output is untrusted text.
+  text.textContent = String(message);
+
+  line.append(time, text);
+  el.append(line);
   el.scrollTop = el.scrollHeight;
 }
 
@@ -73,6 +91,7 @@ async function call(command, args = {}) {
 function setProgress(ratio) {
   const fill = $("progress-fill");
   const track = $("progress-track");
+  const percent = $("progress-percent");
   const indeterminate = ratio === null;
   track.classList.toggle("indeterminate", indeterminate);
   if (indeterminate) {
@@ -80,11 +99,14 @@ function setProgress(ratio) {
     // travels instead, which reads as working rather than frozen.
     fill.style.removeProperty("--p");
     track.removeAttribute("aria-valuenow");
+    percent.textContent = "";
     return;
   }
   const clamped = Math.max(0, Math.min(1, ratio));
   fill.style.setProperty("--p", String(clamped));
   track.setAttribute("aria-valuenow", String(Math.round(clamped * 100)));
+  // Showing the number answers "how much longer" without the user doing arithmetic.
+  percent.textContent = `${Math.round(clamped * 100)}%`;
 }
 
 function setRunning(running) {
@@ -191,7 +213,7 @@ async function refreshKeyStatus() {
   } catch (error) {
     badge.textContent = "无法读取";
     badge.className = "badge unknown";
-    log("密钥状态读取失败: " + error);
+    log("密钥状态读取失败: " + error, "error");
   }
 }
 
@@ -213,7 +235,7 @@ async function saveSettings({ quiet = true } = {}) {
     return true;
   } catch (error) {
     flashSaved("保存失败");
-    log("保存设置失败: " + error);
+    log("保存设置失败: " + error, "error");
     return false;
   }
 }
@@ -230,7 +252,7 @@ async function saveApiKey() {
     flashSaved("密钥已保存");
     await refreshKeyStatus();
   } catch (error) {
-    log("保存密钥失败: " + error);
+    log("保存密钥失败: " + error, "error");
     flashSaved("密钥保存失败");
   }
 }
@@ -243,7 +265,7 @@ async function clearApiKey() {
     flashSaved("密钥已清除");
     await refreshKeyStatus();
   } catch (error) {
-    log("清除失败: " + error);
+    log("清除失败: " + error, "error");
   }
 }
 
@@ -297,7 +319,7 @@ async function startRun(command) {
       },
     });
   } catch (error) {
-    log("错误: " + error);
+    log("错误: " + error, "error");
     $("progress-label").textContent = "启动失败";
     announce("启动失败");
   } finally {
@@ -340,23 +362,23 @@ function handleEvent(payload) {
       }
       setProgress(1);
       $("progress-label").textContent = "完成";
-      log("完成：" + (payload.outputs || []).join(", "));
+      log("完成：" + (payload.outputs || []).join(", "), "done");
       announce("翻译完成");
       break;
     case "error":
       $("progress-label").textContent = "失败";
-      log("出错：" + (payload.message || JSON.stringify(payload)));
+      log("出错：" + (payload.message || JSON.stringify(payload)), "error");
       announce("翻译失败");
       break;
     case "terminated":
-      log(`引擎退出，退出码 ${payload.exitCode}`);
+      log(`引擎退出，退出码 ${payload.exitCode}`, "engine");
       break;
     case "stderr":
-      log("[引擎] " + payload.message);
+      log(payload.message, "engine");
       break;
     case "log":
     default:
-      if (payload.message) log(payload.message);
+      if (payload.message) log(payload.message, "engine");
   }
 }
 
@@ -367,8 +389,12 @@ async function refreshRuns() {
   try {
     const runs = await call("list_runs");
     if (!runs.length) {
-      container.innerHTML = '<p class="muted">还没有运行记录。</p>';
-      // Announce a short summary rather than the whole list.
+      // An empty state should say what this is and what to do, not just that it is empty.
+      container.innerHTML = `
+        <div class="empty">
+          <span class="empty-title">还没有翻译记录</span>
+          在「翻译」页选择一本书并开始，进度会出现在这里，随时可以中断和继续。
+        </div>`;
       announce("没有未完成的翻译");
       return;
     }
@@ -420,7 +446,7 @@ async function refreshRuns() {
         try {
           await call("open_path", { path: run.outputs[0] });
         } catch (error) {
-          log("打开失败: " + error);
+          log("打开失败: " + error, "error");
         }
       });
     });
@@ -456,7 +482,7 @@ async function chooseFile() {
       announce("已选择文件 " + baseName(picked));
     }
   } catch (error) {
-    log("选择文件失败: " + error);
+    log("选择文件失败: " + error, "error");
   }
 }
 
@@ -510,7 +536,7 @@ async function init() {
       log("已请求取消。");
       announce("已请求取消");
     } catch (error) {
-      log("取消失败: " + error);
+      log("取消失败: " + error, "error");
     }
   });
 
@@ -519,7 +545,7 @@ async function init() {
     try {
       await call("open_path", { path: state.lastOutputs[0] });
     } catch (error) {
-      log("打开失败: " + error);
+      log("打开失败: " + error, "error");
     }
   });
   $("open-output-dir").addEventListener("click", async () => {
@@ -528,7 +554,7 @@ async function init() {
     try {
       await call("open_path", { path: target });
     } catch (error) {
-      log("打开失败: " + error);
+      log("打开失败: " + error, "error");
     }
   });
   $("open-input-dir").addEventListener("click", async () => {
@@ -536,7 +562,7 @@ async function init() {
     try {
       await call("open_path", { path: dirName(state.input) });
     } catch (error) {
-      log("打开失败: " + error);
+      log("打开失败: " + error, "error");
     }
   });
   $("open-workspace").addEventListener("click", async () => {
@@ -544,7 +570,7 @@ async function init() {
     try {
       await call("open_path", { path: state.paths.workspaceDir });
     } catch (error) {
-      log("打开失败: " + error);
+      log("打开失败: " + error, "error");
     }
   });
 
@@ -593,7 +619,7 @@ async function init() {
     await refreshKeyStatus();
     refreshRuns();
   } catch (error) {
-    log("初始化失败: " + error);
+    log("初始化失败: " + error, "error");
   }
 
   setRunning(false);

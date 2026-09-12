@@ -1,32 +1,123 @@
 /* Wenyi Desktop — visual system.
  *
- * Applied Apple-design principles:
- *  - response: button feedback fires on pointer-down, not on release
- *  - spatial consistency: one entrance path for panels, mirrored everywhere
- *  - materials: translucent floating chrome, scroll edge fade instead of hard rules
- *  - typography: size-specific tracking/leading, system font, tabular numerals
- *  - frame smoothness: motion limited to transform/opacity (compositor-friendly)
- *  - flexibility: reduced-motion / reduced-transparency / more-contrast honoured
+ * Apple-design principles applied here, with the section that motivates each:
+ *   §1  response        — button feedback fires on pointer-down, not on release
+ *   §7  spatial         — one entrance path for panels, mirrored everywhere
+ *   §11 smoothness      — motion limited to transform/opacity (compositor-friendly)
+ *   §12 materials       — translucent chrome, scroll edge fade, weight = hierarchy
+ *   §14 accessibility   — reduced-motion / -transparency / -contrast honoured
+ *   §15 typography      — size-specific tracking and leading, tabular numerals
+ *   §16 craft           — colours adapt to light and dark, nothing is arbitrary
+ *
+ * Every colour is a token so the light theme is a single override block rather than a
+ * second stylesheet, and so the accessibility media queries can adjust surfaces without
+ * hardcoding theme-specific values.
  */
 
 :root {
+  color-scheme: dark;
+
   --bg: #00263d;
   --panel: rgba(255, 255, 255, 0.045);
   --panel-solid: #0a3548;
+
+  /* Floating chrome is a translucent material; the solid twin is used when the user asks
+   * for reduced transparency. */
+  --chrome-bg: rgba(0, 38, 61, 0.72);
+  --chrome-solid: #00263d;
+  --chrome-fade: rgba(0, 38, 61, 0.6);
+  --chrome-text: #b6cad4;
+
   --control: rgba(255, 255, 255, 0.06);
   --control-hover: rgba(255, 255, 255, 0.1);
+  --field: rgba(255, 255, 255, 0.06);
+  --field-focus: rgba(255, 255, 255, 0.09);
+  --placeholder: rgba(157, 180, 192, 0.62);
+
   --accent: #d4b56a;
+  --accent-hover: #e0c37c;
+  --accent-ink: #00263d;
   --accent-dim: rgba(212, 181, 106, 0.16);
+  --accent-border: rgba(212, 181, 106, 0.28);
+  --accent-tint: rgba(212, 181, 106, 0.04);
+  --accent-strong-border: rgba(212, 181, 106, 0.5);
+
   --text: #eef3f6;
+  --text-soft: rgba(238, 243, 246, 0.86);
+  --text-mono: rgba(238, 243, 246, 0.82);
   --muted: #9db4c0;
+
   --hairline: rgba(255, 255, 255, 0.09);
   --hairline-strong: rgba(255, 255, 255, 0.16);
+
   --ok: #7fd39b;
+  --ok-border: rgba(127, 211, 155, 0.35);
+  --ok-bg: rgba(127, 211, 155, 0.1);
   --bad: #eb9a9a;
+  --bad-border: rgba(235, 154, 154, 0.35);
+  --bad-bg: rgba(235, 154, 154, 0.1);
+  --danger-bg: rgba(235, 154, 154, 0.12);
+  --danger-bg-hover: rgba(235, 154, 154, 0.2);
+
+  --log-bg: rgba(0, 0, 0, 0.28);
+  --shadow-card: 0 1px 2px rgba(0, 0, 0, 0.18), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  --progress-track: rgba(255, 255, 255, 0.07);
+
   --radius: 12px;
   --radius-sm: 8px;
-  /* A smooth, decelerating curve (no overshoot) used for every entrance. */
   --ease-out: cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+/* Light theme. Not a naive inversion: the brand navy stays as ink, the gold darkens to
+ * hold contrast on a light field, and surfaces become warm paper rather than pure white. */
+@media (prefers-color-scheme: light) {
+  :root {
+    color-scheme: light;
+
+    --bg: #f2efe8;
+    --panel: rgba(255, 255, 255, 0.72);
+    --panel-solid: #ffffff;
+
+    --chrome-bg: rgba(242, 239, 232, 0.76);
+    --chrome-solid: #f2efe8;
+    --chrome-fade: rgba(242, 239, 232, 0.65);
+    --chrome-text: #4c6272;
+
+    --control: rgba(0, 38, 61, 0.05);
+    --control-hover: rgba(0, 38, 61, 0.09);
+    --field: #ffffff;
+    --field-focus: #ffffff;
+    --placeholder: rgba(76, 98, 114, 0.5);
+
+    --accent: #9a7620;
+    --accent-hover: #85641a;
+    --accent-ink: #ffffff;
+    --accent-dim: rgba(154, 118, 32, 0.12);
+    --accent-border: rgba(154, 118, 32, 0.3);
+    --accent-tint: rgba(154, 118, 32, 0.05);
+    --accent-strong-border: rgba(154, 118, 32, 0.55);
+
+    --text: #12252f;
+    --text-soft: rgba(18, 37, 47, 0.86);
+    --text-mono: rgba(18, 37, 47, 0.82);
+    --muted: #5d7280;
+
+    --hairline: rgba(0, 38, 61, 0.12);
+    --hairline-strong: rgba(0, 38, 61, 0.2);
+
+    --ok: #1f7a45;
+    --ok-border: rgba(31, 122, 69, 0.32);
+    --ok-bg: rgba(31, 122, 69, 0.1);
+    --bad: #a6373a;
+    --bad-border: rgba(166, 55, 58, 0.32);
+    --bad-bg: rgba(166, 55, 58, 0.09);
+    --danger-bg: rgba(166, 55, 58, 0.08);
+    --danger-bg-hover: rgba(166, 55, 58, 0.16);
+
+    --log-bg: rgba(0, 38, 61, 0.045);
+    --shadow-card: 0 1px 2px rgba(0, 38, 61, 0.06), 0 8px 24px -14px rgba(0, 38, 61, 0.22);
+    --progress-track: rgba(0, 38, 61, 0.1);
+  }
 }
 
 * {
@@ -34,7 +125,7 @@
 }
 
 html {
-  /* Keep the root at the user's text size so rem-based layout scales with it. */
+  /* Root stays at the user's text size so rem-based layout scales with it (§15). */
   font-size: 100%;
 }
 
@@ -61,8 +152,8 @@ body {
   border: 0;
 }
 
-/* ── Floating chrome ─────────────────────────────────────────────────────────
- * Translucent material so content scrolls underneath, with a soft fade at the
+/* ── Floating chrome (§12) ───────────────────────────────────────────────────
+ * A translucent material with content scrolling underneath, and a soft fade at the
  * edge instead of a 1px divider. */
 .chrome {
   position: sticky;
@@ -73,7 +164,7 @@ body {
   justify-content: space-between;
   gap: 1.5rem;
   padding: 1.25rem 2rem 0.5rem;
-  background: rgba(0, 38, 61, 0.72);
+  background: var(--chrome-bg);
   backdrop-filter: blur(20px) saturate(180%);
   -webkit-backdrop-filter: blur(20px) saturate(180%);
 }
@@ -85,7 +176,7 @@ body {
   bottom: -1rem;
   height: 1rem;
   pointer-events: none;
-  background: linear-gradient(to bottom, rgba(0, 38, 61, 0.6), rgba(0, 38, 61, 0));
+  background: linear-gradient(to bottom, var(--chrome-fade), transparent);
 }
 
 .brand h1 {
@@ -93,7 +184,7 @@ body {
   font-size: 1.625rem;
   font-weight: 600;
   line-height: 1.1;
-  /* Large text reads too loose at default tracking: tighten it. */
+  /* Large text reads too loose at default tracking: tighten it (§15). */
   letter-spacing: -0.021em;
   color: var(--accent);
 }
@@ -101,14 +192,11 @@ body {
   margin: 0.125rem 0 0.75rem;
   font-size: 0.75rem;
   line-height: 1.4;
-  color: var(--muted);
   font-style: italic;
   letter-spacing: 0.01em;
-}
-/* Vibrancy: text over a translucent material needs more contrast than the same text on
- * a solid background, because the backdrop changes as content scrolls underneath. */
-.chrome .tagline {
-  color: #b6cad4;
+  /* Vibrancy: over a material whose backdrop changes during scroll, muted body colour is
+   * not enough contrast (§12). */
+  color: var(--chrome-text);
 }
 
 .header-right {
@@ -126,14 +214,14 @@ body {
   color: var(--muted);
   background: transparent;
   border: 1px solid transparent;
-  /* Never occupy layout space when empty, so the tabs do not shift. */
-  transition: opacity 200ms var(--ease-out), background-color 200ms var(--ease-out);
   opacity: 0;
+  /* Reserve no space when empty, so the tabs never shift. */
+  transition: opacity 200ms var(--ease-out), background-color 200ms var(--ease-out);
 }
 .pill.visible {
   opacity: 1;
   background: var(--accent-dim);
-  border-color: rgba(212, 181, 106, 0.28);
+  border-color: var(--accent-border);
   color: var(--accent);
 }
 
@@ -159,7 +247,7 @@ body {
   color: var(--text);
   background: var(--control);
 }
-/* Feedback on the press, and it is instant. */
+/* Feedback lives on the press, and it is instant (§1). */
 .tab:active {
   transform: scale(0.97);
 }
@@ -190,8 +278,8 @@ main {
 .panel.active {
   display: grid;
   gap: 1rem;
-  /* One consistent entrance path: a short rise into place, never a slide from a
-   * different direction than it should leave by. */
+  /* One consistent entrance path, never a slide from a direction it will not leave by
+   * (§7). Not gesture-driven, so a keyframe is appropriate here. */
   animation: panel-in 220ms var(--ease-out) both;
 }
 @keyframes panel-in {
@@ -205,15 +293,15 @@ main {
   }
 }
 
-/* ── Cards as materials ───────────────────────────────────────────────────── */
+/* ── Cards (§12) ──────────────────────────────────────────────────────────── */
 .card {
   background: var(--panel);
   border: 1px solid var(--hairline);
-  /* A bright top edge reads as light catching the surface. */
+  /* A brighter top edge reads as light catching the material. */
   border-top-color: var(--hairline-strong);
   border-radius: var(--radius);
   padding: 1.125rem 1.25rem;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18), 0 8px 24px -12px rgba(0, 0, 0, 0.5);
+  box-shadow: var(--shadow-card);
 }
 .card h2 {
   margin: 0 0 0.75rem;
@@ -259,7 +347,7 @@ label.grow {
 input[type="text"],
 input[type="password"],
 select {
-  background: var(--control);
+  background: var(--field);
   border: 1px solid var(--hairline);
   color: var(--text);
   border-radius: var(--radius-sm);
@@ -280,17 +368,17 @@ input[type="password"]:focus,
 select:focus {
   outline: none;
   border-color: var(--accent);
-  background: rgba(255, 255, 255, 0.09);
+  background: var(--field-focus);
 }
 input::placeholder {
-  color: rgba(157, 180, 192, 0.62);
+  color: var(--placeholder);
 }
 input[type="checkbox"] {
   width: auto;
   accent-color: var(--accent);
 }
 
-/* ── Buttons ──────────────────────────────────────────────────────────────── */
+/* ── Buttons (§1) ─────────────────────────────────────────────────────────── */
 button {
   background: var(--control);
   color: var(--text);
@@ -318,12 +406,12 @@ button:disabled {
 }
 button.primary {
   background: var(--accent);
-  color: #00263d;
+  color: var(--accent-ink);
   font-weight: 600;
   border-color: transparent;
 }
 button.primary:hover:not(:disabled) {
-  background: #e0c37c;
+  background: var(--accent-hover);
 }
 button.ghost {
   background: transparent;
@@ -333,12 +421,12 @@ button.small {
   font-size: 0.75rem;
 }
 button.danger {
-  background: rgba(235, 154, 154, 0.12);
-  border-color: rgba(235, 154, 154, 0.3);
+  background: var(--danger-bg);
+  border-color: var(--bad-border);
   color: var(--bad);
 }
 button.danger:hover:not(:disabled) {
-  background: rgba(235, 154, 154, 0.2);
+  background: var(--danger-bg-hover);
 }
 
 /* A visible ring for keyboard users only. */
@@ -348,7 +436,7 @@ button.danger:hover:not(:disabled) {
   border-radius: var(--radius-sm);
 }
 
-/* ── Drop zone ────────────────────────────────────────────────────────────── */
+/* ── Drop zone (§1 continuous feedback, §7 anchor) ────────────────────────── */
 .drop-zone {
   display: flex;
   flex-direction: column;
@@ -365,10 +453,10 @@ button.danger:hover:not(:disabled) {
     transform 160ms var(--ease-out);
 }
 .drop-zone:hover {
-  border-color: rgba(212, 181, 106, 0.5);
-  background: rgba(212, 181, 106, 0.04);
+  border-color: var(--accent-strong-border);
+  background: var(--accent-tint);
 }
-/* Continuous feedback while the file is actually over the target. */
+/* Reactive while the file is actually held over the target, not only on drop. */
 .drop-zone.active {
   border-color: var(--accent);
   background: var(--accent-dim);
@@ -411,14 +499,6 @@ button.danger:hover:not(:disabled) {
   line-height: 1.6;
   max-width: 60ch;
 }
-.ok {
-  color: var(--ok);
-  font-size: 0.75rem;
-}
-.error {
-  color: var(--bad);
-  font-size: 0.75rem;
-}
 
 .badge {
   display: inline-block;
@@ -432,14 +512,13 @@ button.danger:hover:not(:disabled) {
 }
 .badge.ok {
   color: var(--ok);
-  border-color: rgba(127, 211, 155, 0.35);
-  background: rgba(127, 211, 155, 0.1);
-  font-size: 0.6875rem;
+  border-color: var(--ok-border);
+  background: var(--ok-bg);
 }
 .badge.missing {
   color: var(--bad);
-  border-color: rgba(235, 154, 154, 0.35);
-  background: rgba(235, 154, 154, 0.1);
+  border-color: var(--bad-border);
+  background: var(--bad-bg);
 }
 .api-key-row {
   align-items: flex-end;
@@ -451,7 +530,7 @@ button.danger:hover:not(:disabled) {
   flex-wrap: wrap;
 }
 
-/* ── Progress ─────────────────────────────────────────────────────────────── */
+/* ── Progress (§11) ───────────────────────────────────────────────────────── */
 .progress-wrap {
   margin-top: 0.875rem;
 }
@@ -459,13 +538,13 @@ button.danger:hover:not(:disabled) {
   position: relative;
   height: 0.5rem;
   border-radius: 999px;
-  background: rgba(255, 255, 255, 0.07);
+  background: var(--progress-track);
   overflow: hidden;
 }
 .progress-bar.small {
   height: 0.25rem;
 }
-/* Animate with a compositor-friendly transform, not `width` (which relayouts). */
+/* Animate a compositor-friendly transform, not `width` (which relayouts every frame). */
 .fill {
   /* Set from JS as a 0..1 ratio; declared here so the resting state is explicit. */
   --p: 0;
@@ -473,13 +552,13 @@ button.danger:hover:not(:disabled) {
   width: 100%;
   transform: scaleX(var(--p));
   transform-origin: left center;
-  background: linear-gradient(90deg, #c9a95c, var(--accent));
+  background: linear-gradient(90deg, var(--accent-hover), var(--accent));
   border-radius: inherit;
-  /* Short enough to stay glued to incoming events rather than lagging behind. */
+  /* Short enough to stay glued to incoming events rather than lagging behind them. */
   transition: transform 140ms var(--ease-out);
 }
-/* Indeterminate work still has to read as *working* — an empty bar reads as frozen.
- * This travels rather than filling, so it never implies a number we do not have. */
+/* Indeterminate work must still read as *working* — an empty track reads as frozen.
+ * This travels instead of filling, so it never implies a number we do not have. */
 .progress-bar.indeterminate .fill {
   width: 38%;
   transform: none;
@@ -494,10 +573,25 @@ button.danger:hover:not(:disabled) {
     transform: translateX(280%);
   }
 }
-#progress-label {
+.progress-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 1rem;
   margin-top: 0.4375rem;
-  /* Numbers must not jitter as digits change. */
+}
+#progress-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+#progress-percent {
+  /* Numbers must not jitter as digits change (§15). */
   font-variant-numeric: tabular-nums;
+  font-size: 0.75rem;
+  color: var(--muted);
+  flex-shrink: 0;
 }
 
 .output-actions {
@@ -508,22 +602,48 @@ button.danger:hover:not(:disabled) {
   display: none;
 }
 
-pre {
-  background: rgba(0, 0, 0, 0.28);
+/* ── Log (structured, so each line can carry its own weight) ──────────────── */
+.log {
+  background: var(--log-bg);
   border: 1px solid var(--hairline);
   border-radius: var(--radius-sm);
-  padding: 0.75rem;
+  padding: 0.625rem 0.75rem;
   min-height: 8rem;
   max-height: 16rem;
   overflow: auto;
-  font-size: 0.75rem;
-  line-height: 1.6;
-  white-space: pre-wrap;
-  word-break: break-word;
   margin: 0.875rem 0 0;
   font-family: "Cascadia Mono", Consolas, monospace;
-  color: rgba(238, 243, 246, 0.86);
+  font-size: 0.75rem;
+  line-height: 1.65;
   font-variant-numeric: tabular-nums;
+  color: var(--text-soft);
+}
+.log:empty::before {
+  content: "运行日志会显示在这里";
+  color: var(--muted);
+}
+.log-line {
+  display: flex;
+  gap: 0.5rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.log-text {
+  min-width: 0;
+}
+.log-engine .log-text {
+  color: var(--muted);
+}
+.log-error .log-text {
+  color: var(--bad);
+}
+.log-done .log-text {
+  color: var(--ok);
+}
+.log-time {
+  color: var(--muted);
+  opacity: 0.7;
+  flex-shrink: 0;
 }
 
 /* ── Resume list ──────────────────────────────────────────────────────────── */
@@ -573,6 +693,19 @@ pre {
   flex-shrink: 0;
 }
 
+/* Empty states answer "what is this and what do I do" rather than stating a fact. */
+.empty {
+  padding: 1.5rem 0.5rem;
+  text-align: center;
+  color: var(--muted);
+}
+.empty-title {
+  display: block;
+  color: var(--text);
+  font-size: 0.8125rem;
+  margin-bottom: 0.25rem;
+}
+
 /* ── Key/value paths ──────────────────────────────────────────────────────── */
 dl.kv {
   display: grid;
@@ -592,12 +725,12 @@ dl.kv dd {
   text-overflow: ellipsis;
   white-space: nowrap;
   font-family: "Cascadia Mono", Consolas, monospace;
-  color: rgba(238, 243, 246, 0.82);
+  color: var(--text-mono);
 }
 
-/* ── Accessibility preferences ─────────────────────────────────────────────── */
+/* ── Accessibility preferences (§14) ───────────────────────────────────────── */
 
-/* Gentle cross-fades instead of movement; no elastic entrances. */
+/* Gentle cross-fades instead of movement; no travelling shimmer, no elastic entrances. */
 @media (prefers-reduced-motion: reduce) {
   .panel.active {
     animation: panel-fade 140ms ease both;
@@ -618,7 +751,6 @@ dl.kv dd {
   .fill {
     transition: none;
   }
-  /* No travelling shimmer: fall back to a static, dimmed indicator. */
   .progress-bar.indeterminate .fill {
     animation: none;
     width: 100%;
@@ -627,41 +759,50 @@ dl.kv dd {
   }
 }
 
-/* Frostier, more opaque surfaces when translucency is unwanted. */
+/* Frostier, opaque surfaces when translucency is unwanted. */
 @media (prefers-reduced-transparency: reduce) {
   .chrome {
-    background: #00263d;
+    background: var(--chrome-solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
-  .card {
-    background: var(--panel-solid);
-  }
   .chrome::after {
     display: none;
+  }
+  .card {
+    background: var(--panel-solid);
   }
 }
 
 /* Near-solid surfaces with defined borders for higher contrast. */
 @media (prefers-contrast: more) {
   :root {
+    --hairline: rgba(255, 255, 255, 0.3);
+    --hairline-strong: rgba(255, 255, 255, 0.45);
     --muted: #c3d3dc;
-    --hairline: rgba(255, 255, 255, 0.28);
-    --hairline-strong: rgba(255, 255, 255, 0.42);
   }
   .chrome {
-    background: #00263d;
+    background: var(--chrome-solid);
     backdrop-filter: none;
     -webkit-backdrop-filter: none;
   }
+  .chrome::after {
+    display: none;
+  }
   .card {
     background: var(--panel-solid);
-    border-color: var(--hairline);
   }
   input[type="text"],
   input[type="password"],
   select,
   button {
     border-color: var(--hairline-strong);
+  }
+}
+@media (prefers-contrast: more) and (prefers-color-scheme: light) {
+  :root {
+    --hairline: rgba(0, 38, 61, 0.42);
+    --hairline-strong: rgba(0, 38, 61, 0.6);
+    --muted: #3f5462;
   }
 }
