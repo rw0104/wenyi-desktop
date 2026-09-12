@@ -1,6 +1,19 @@
+# JS / Node
 node_modules/
+
+# Rust build output and generated Tauri scaffolding
 src-tauri/target/
 src-tauri/gen/
+
+# PyInstaller sidecar binaries (built by sidecar/build_sidecar.ps1)
 src-tauri/binaries/
-ui/.DS_Store
+
+# The engine writes a default config.yaml into its working directory on any
+# invocation, including `--version`. The desktop shell generates its own config
+# under the app data directory, so this stray file is never part of the project.
+config.yaml
+state/
+output/
+
 *.log
+ui/.DS_Store

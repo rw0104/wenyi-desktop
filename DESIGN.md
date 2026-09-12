@@ -170,13 +170,35 @@ sidecar 二进制产物放入 `src-tauri/binaries/wenyi-core-<target-triple>.exe
 | 阶段 | 内容 | 产出 | 状态 |
 |---|---|---|---|
 | P0 | `trans_novel` 增加 `--json-events` + JSONL 报告模块 + 回归测试 | 核心可被 GUI 消费 | ✅ 完成 |
-| P1 | Tauri v2 骨架（本目录）+ sidecar 打包脚本 | 可 `tauri dev` 出窗口 | ✅ 完成 |
-| P2 | 前端 UI：设置持久化、断点续跑恢复、产物打开、凭据库 | 最小可用桌面应用 | ⏳ 待做 |
+| P1 | Tauri v2 骨架 + sidecar 打包脚本 | 可 `tauri dev` 出窗口 | ✅ 完成 |
+| P2 | 设置持久化、凭据库密钥、断点续跑、产物打开、原生对话框 | 可用桌面应用 | ✅ 完成 |
 | P3 | NSIS/MSI + CI 构建 + 代码签名 + 自动更新 | 可分发安装包 | ⏳ 待做 |
 
 P0 的交付物以补丁形式归档在 `engine-patch/`（上游仓库非本项目所有，无法直接推送），
-并用 `engine-patch/apply.ps1` 幂等地应用到引擎源码检出。已验证：应用补丁后 `trans_novel/cli.py`
-与开发态逐字节一致（SHA-256 相同），`tests/test_json_events.py` 11 项通过，全仓 Ruff 通过。
+并用锁定的上游 commit 保证可复现：`upstream.json` 记录基线 `818e70b`，
+`bootstrap_engine.ps1` 按该 commit 检出后应用补丁，`apply.ps1` 在版本不匹配时告警。
+
+已验证：补丁应用后 `trans_novel/cli.py` 与开发态逐字节一致（SHA-256 相同）；
+bootstrap 从零克隆得到完整引擎（11 项引擎测试通过）；P2 `cargo check` 零警告、
+15 项 Rust 单元测试通过（含真实 Windows 凭据管理器往返）、`tauri build` 产出 NSIS + MSI；
+构建产物启动后正常显示窗口（33 MB 常驻内存）。
+
+### 7.1 P2 设计要点
+
+- **设置持久化**：`desktop-settings.json` 存于应用数据目录；每次保存与每次运行前都调用
+  `settings::write_engine_config` 重写 `config.yaml`，避免 UI 与引擎配置漂移。
+  只生成引擎文档化的顶层段落（`language`/`llm`/`pipeline`/`output`），并有单元测试守住这一点
+  ——引擎会拒绝未知字段，多写一个键就会让每次运行启动即失败。
+- **密钥**：`keyring` 直连 OS 凭据库。IPC 只暴露"某项是否存在"（`api_key_status`），
+  密钥本身从不回传前端；运行时由 Rust 注入子进程环境变量。Rust 侧用一次性输入框的值覆盖
+  已存凭据，于是"临时试用某把 key"无需先落盘。
+- **断点续跑**：以引擎自身的 `source_sha256` 作为身份做**内容匹配**，而非按文件名——
+  重命名或移动书籍后依然能恢复。历史记录只存输入路径与时间，进度实时从 manifest 读取。
+- **原生 UI**：文件对话框在 Rust 侧实现（`pick_input_file`），避免依赖插件 JS 全局对象，
+  因为本项目前端刻意不引入打包器。
+- **工作目录**：sidecar 以 `<app data>/workspace` 为 cwd 启动，使引擎的相对 `state/`
+  落在固定位置、可被续跑页发现。
+
 
 ## 8. 风险与边界
 

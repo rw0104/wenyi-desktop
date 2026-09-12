@@ -3,11 +3,18 @@
 $ErrorActionPreference = "Stop"
 
 # Windows PowerShell 5.1 turns native stderr into a terminating error under
-# ErrorActionPreference=Stop, so merge streams and check the exit code ourselves.
+# ErrorActionPreference=Stop. Merging the streams is not enough: the merged records are
+# still NativeCommandError, so relax the preference locally and check the exit code.
 function Invoke-Native {
     param([string]$Exe, [string[]]$Arguments, [string]$What)
-    & $Exe @Arguments 2>&1 | ForEach-Object { Write-Host "  $_" }
-    if ($LASTEXITCODE -ne 0) { throw "$What failed (exit code $LASTEXITCODE)" }
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    try {
+        & $Exe @Arguments 2>&1 | ForEach-Object { Write-Host "  $_" }
+        $code = $LASTEXITCODE
+    }
+    finally { $ErrorActionPreference = $previous }
+    if ($code -ne 0) { throw "$What failed (exit code $code)" }
 }
 
 $Root = $PSScriptRoot

@@ -1,0 +1,8 @@
+{
+  "upstream": "https://github.com/BigDawnGhost/wenyi.git",
+  "baseCommit": "818e70b2cd6dcec272a7f2c102e23c56080be2e7",
+  "baseCommitShort": "818e70b",
+  "baseCommitSubject": "Merge pull request #219 from BigDawnGhost/dev",
+  "license": "MIT",
+  "note": "P0 patch (trans_novel/cli.py diff + trans_novel/json_events.py + tests/test_json_events.py) was generated against this commit. bootstrap_engine.ps1 checks out exactly this revision so the patch always applies; apply.ps1 warns when a checkout sits on a different revision."
+}

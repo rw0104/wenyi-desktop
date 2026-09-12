@@ -1,6 +1,6 @@
 [package]
 name = "wenyi-desktop"
-version = "0.1.0"
+version = "0.2.0"
 description = "Desktop shell for Wenyi translation engine"
 edition = "2021"
 rust-version = "1.77"
@@ -15,8 +15,13 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+sha2 = "0.10"
 tauri = { version = "2", features = [] }
 tauri-plugin-shell = "2"
 tauri-plugin-dialog = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-fs = "2"
+
+# API keys live in the OS credential store. Native backends only, so no D-Bus or
+# libsecret system dependency is required at build time.
+keyring = { version = "3", features = ["windows-native", "apple-native", "linux-native"] }
