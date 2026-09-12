@@ -50,11 +50,17 @@ try {
     }
 
     Write-Host "[3/3] PyInstaller build ..."
+    # `--collect-all trans_novel` is load-bearing, not a nicety: the engine resolves
+    # providers dynamically (`importlib.import_module("trans_novel.llm.providers.<kind>")`),
+    # which PyInstaller's static analysis cannot follow. Without it the frozen engine ships
+    # with only the statically-imported `fake` provider and every real model fails at
+    # runtime with "No module named 'trans_novel.llm.providers.deepseek'".
     Invoke-Native uv @(
         "run", "--no-sync", "python", "-m", "PyInstaller",
         "--name", "wenyi-core",
         "--onefile", "--clean", "--noconfirm",
         "--paths", ".",
+        "--collect-all", "trans_novel",
         "--collect-all", "ebooklib", "--collect-all", "bs4", "--collect-all", "lxml",
         "--collect-all", "openai", "--collect-all", "pydantic", "--collect-all", "yaml",
         "--collect-data", "trans_novel.i18n",

@@ -38,7 +38,7 @@
     "externalBin": ["binaries/wenyi-core"],
     "windows": {
       "nsis": {
-        "installMode": "perMachine",
+        "installMode": "both",
         "languages": ["English", "SimpChinese"]
       }
     }

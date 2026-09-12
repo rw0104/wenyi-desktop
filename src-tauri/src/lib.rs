@@ -149,6 +149,30 @@ fn open_path(app: AppHandle, path: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Build the engine command line.
+///
+/// Order matters: `--config` and `--json-events` are *group-level* options declared on the
+/// CLI's root callback, so they must precede the subcommand. Command-level switches such as
+/// `--no-polish` must follow it. Getting this wrong makes every invocation fail with
+/// "No such option: --config", which no compile-time check can catch — hence the test below.
+fn build_engine_args(
+    command: &str,
+    input: &str,
+    config_path: &str,
+    flags: &[String],
+) -> Vec<String> {
+    let mut args: Vec<String> = Vec::with_capacity(6 + flags.len());
+    args.push("--config".into());
+    args.push(config_path.to_string());
+    args.push("--json-events".into());
+    // Subcommand and its positional argument.
+    args.push(command.to_string());
+    args.push(input.to_string());
+    // Command-level flags belong after the subcommand.
+    args.extend(flags.iter().cloned());
+    args
+}
+
 // ── Engine control ───────────────────────────────────────────────────────────────
 
 /// Kill a running sidecar (cancel an in-flight translation).
@@ -190,14 +214,12 @@ async fn run_engine(
     let workspace = settings::workspace_dir(&app)?;
     let config_path = settings::config_file(&app)?;
 
-    // Assemble arguments: <command> <input> [--config PATH] [flags...] --json-events
-    let mut args: Vec<String> = vec![request.command.clone(), input.clone()];
-    args.push("--config".into());
-    args.push(config_path.to_string_lossy().into_owned());
-    for flag in request.flags.iter() {
-        args.push(flag.clone());
-    }
-    args.push("--json-events".into());
+    let args = build_engine_args(
+        &request.command,
+        &input,
+        &config_path.to_string_lossy(),
+        &request.flags,
+    );
 
     // Credentials: a one-off typed key wins, otherwise the OS credential store.
     let mut env: Vec<(String, String)> = Vec::new();
@@ -347,4 +369,53 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running Wenyi Desktop");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Regression: `--config` and `--json-events` used to be appended after the subcommand,
+    /// which the engine rejects with "No such option: --config" on every run. Group-level
+    /// options must come first; command-level flags must come after.
+    #[test]
+    fn group_options_precede_the_subcommand_and_flags_follow_it() {
+        let flags = vec!["--no-polish".to_string(), "--bilingual".to_string()];
+        let args = build_engine_args("translate", "book.epub", "C:\\ws\\config.yaml", &flags);
+
+        assert_eq!(
+            args,
+            vec![
+                "--config",
+                "C:\\ws\\config.yaml",
+                "--json-events",
+                "translate",
+                "book.epub",
+                "--no-polish",
+                "--bilingual",
+            ]
+        );
+
+        let subcommand = args.iter().position(|a| a == "translate").unwrap();
+        for group_option in ["--config", "--json-events"] {
+            let pos = args.iter().position(|a| a == group_option).unwrap();
+            assert!(
+                pos < subcommand,
+                "{group_option} must precede the subcommand"
+            );
+        }
+        for flag in &flags {
+            let pos = args.iter().position(|a| a == flag).unwrap();
+            assert!(pos > subcommand, "{flag} must follow the subcommand");
+        }
+    }
+
+    #[test]
+    fn engine_args_work_without_flags() {
+        let args = build_engine_args("prepare", "in.txt", "/cfg.yaml", &[]);
+        assert_eq!(
+            args,
+            vec!["--config", "/cfg.yaml", "--json-events", "prepare", "in.txt"]
+        );
+    }
 }
