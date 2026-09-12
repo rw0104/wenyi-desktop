@@ -1,0 +1,360 @@
+diff --git a/trans_novel/cli.py b/trans_novel/cli.py
+index 248f12f..9014319 100644
+--- a/trans_novel/cli.py
++++ b/trans_novel/cli.py
+@@ -9,8 +9,9 @@ from __future__ import annotations
+ import os
+ import sys
+ from collections.abc import Sequence
++from contextlib import contextmanager
+ from importlib.metadata import version as package_version
+-from typing import Any
++from typing import Any, Iterator
+ 
+ import typer
+ import yaml
+@@ -32,6 +33,7 @@ from .config import Config
+ from .i18n.languages import validate_run_languages
+ from .ingest.errors import IngestError
+ from .ingest.segmenter import load_document
++from .json_events import JsonEventsSink
+ from .model_commands import register_model_commands
+ from .pipeline.runstore import STATUS_DONE, RunStore, translation_run_dir
+ 
+@@ -57,7 +59,7 @@ def _configure_windows_console(
+ 
+ _configure_windows_console()
+ 
+-_CONFIG: dict[str, Any] = {"path": "config.yaml", "skip_api_check": False}
++_CONFIG: dict[str, Any] = {"path": "config.yaml", "skip_api_check": False, "json_events": False}
+ 
+ 
+ def _config_path_from_args(args: Sequence[str]) -> str:
+@@ -174,6 +176,63 @@ class _RichProgressBridge:
+         self._stage = stage
+ 
+ 
++def _json_sink() -> JsonEventsSink:
++    """Return (and cache) the JSONL event sink for this invocation, if enabled."""
++    sink = _CONFIG.get("_json_events_sink")
++    if sink is None:
++        sink = JsonEventsSink()
++        _CONFIG["_json_events_sink"] = sink
++    return sink
++
++
++def _json_events_enabled() -> bool:
++    """Whether this invocation runs in machine-readable JSONL mode."""
++    return bool(_CONFIG.get("json_events"))
++
++
++def _bind_console_for_json_events() -> None:
++    """Send human-readable output to stderr, keeping stdout a pure JSONL stream.
++
++    Desktop clients parse stdout line by line; any Rich message mixed in would break
++    framing. Human progress, summaries and errors move to stderr, which clients treat
++    as a log channel.
++    """
++    global console
++    console = Console(stderr=True)
++
++
++def _emit_json_error(error: BaseException) -> None:
++    """Emit a terminal JSON ``error`` event when running in JSONL mode.
++
++    Desktop clients await a terminal event; without this an unexpected failure would
++    leave them blocked on a stream that simply stops.
++    """
++    if _json_events_enabled():
++        _json_sink().error(str(error) or type(error).__name__)
++
++
++@contextmanager
++def _progress_scope(orch: Any, initial: str) -> Iterator[Any]:
++    """Yield a ``ProgressFn`` callback, wrapping the client interrupt scope.
++
++    In normal CLI mode this enters a Rich ``Progress`` display and returns a
++    ``_RichProgressBridge``. In ``--json-events`` mode it skips terminal rendering and
++    returns the shared ``JsonEventsSink`` so structured events go to stdout instead.
++    """
++    if _json_events_enabled():
++        with orch.client.interrupt_scope():
++            yield _json_sink()
++        return
++    with (
++        orch.client.interrupt_scope(),
++        Progress(
++            *_progress_columns(),
++            console=console,
++        ) as prog,
++    ):
++        yield _RichProgressBridge(prog, initial)
++
++
+ def _version_callback(value: bool) -> None:
+     """Print the installed package version derived from Git tags and exit."""
+     if value:
+@@ -197,10 +256,21 @@ def _root(
+         is_eager=True,
+         help="Show the version and exit",
+     ),
++    json_events: bool = typer.Option(
++        False,
++        "--json-events",
++        help="Emit machine-readable JSONL progress events on stdout (for desktop clients)",
++    ),
+ ):
+     """Record the config path; workflow commands validate credentials after their overrides."""
+     del version
+     _CONFIG["path"] = config
++    _CONFIG["json_events"] = json_events
++    # Drop any sink cached by a previous invocation so events bind to the current stdout.
++    _CONFIG.pop("_json_events_sink", None)
++    if json_events:
++        _bind_console_for_json_events()
++    del ctx  # reserved for future context hooks
+ 
+ 
+ def _load_config() -> Config:
+@@ -320,8 +390,14 @@ def _translate_impl(
+     except typer.Exit:
+         raise
+     except (IngestError, ImportError, OSError, ValueError, RuntimeError) as error:
++        _emit_json_error(error)
+         console.print(f"[red]Error: {error}[/]")
+         raise typer.Exit(1) from None
++    except Exception as error:  # noqa: BLE001 - JSONL clients need a terminal event
++        if _json_events_enabled():
++            _emit_json_error(error)
++            raise typer.Exit(1) from None
++        raise
+ 
+ 
+ def _translate_srt_or_raise(
+@@ -358,27 +434,45 @@ def _translate_srt_or_raise(
+     if bilingual is not None:
+         config.output.bilingual = bilingual
+ 
+-    with Progress(
+-        *_progress_columns(),
+-        console=console,
+-    ) as prog:
+-        cb = _RichProgressBridge(prog, "Translating subtitles…")
++    if _json_events_enabled():
+         result = translate_srt(
+             input_path,
+             config,
+             out=out,
+             mono=mono,
+             bilingual=bilingual,
+-            progress=cb,
++            progress=_json_sink(),
+         )
++    else:
++        with Progress(
++            *_progress_columns(),
++            console=console,
++        ) as prog:
++            cb = _RichProgressBridge(prog, "Translating subtitles…")
++            result = translate_srt(
++                input_path,
++                config,
++                out=out,
++                mono=mono,
++                bilingual=bilingual,
++                progress=cb,
++            )
+ 
+     console.print(
+         f"[bold green]Subtitle translation complete[/]: {result['translated']}/{result['cue_count']} cues, "
+         f"State directory: {result['run_dir']}"
+     )
+     _print_usage({"usage": result.get("usage") or {}})
+-    for path in result.get("outputs") or []:
++    outputs = result.get("outputs") or []
++    for path in outputs:
+         console.print(f"Translation: [bold]{path}[/]")
++    if _json_events_enabled():
++        _json_sink().usage({"usage": result.get("usage") or {}})
++        _json_sink().done(
++            outputs=[str(p) for p in outputs],
++            chapters_done=result["translated"],
++            chapters_total=result["cue_count"],
++        )
+ 
+ 
+ def _translate_impl_or_raise(
+@@ -444,25 +538,21 @@ def _translate_impl_or_raise(
+     _require_input_file(input_path)
+     orch = Orchestrator(config)
+ 
+-    with (
+-        orch.client.interrupt_scope(),
+-        Progress(
+-            *_progress_columns(),
+-            console=console,
+-        ) as prog,
+-    ):
+-        cb = _RichProgressBridge(prog, "Preparing…")
+-
++    with _progress_scope(orch, "Preparing…") as cb:
+         if chapter is not None:
+             try:
+                 store = orch.run(input_path, only_chapter=chapter, progress=cb)
+             except ValueError as error:
++                _emit_json_error(error)
+                 console.print(f"[red]{error}[/]")
+                 raise typer.Exit(2) from error
+             console.print(
+                 f"[green]Translated chapter {chapter}[/], State directory: {store.run_dir}"
+             )
+             _print_usage({"usage": store.load_usage() or {}})
++            if _json_events_enabled():
++                _json_sink().usage({"usage": store.load_usage() or {}})
++                _json_sink().emit("done", chapters_done=1, chapters_total=1)
+             return
+ 
+         result = orch.run_all(
+@@ -478,7 +568,8 @@ def _translate_impl_or_raise(
+         f"[bold green]Complete[/]: {s['chapters_done']}/{s['chapters_total']} chapters, terms: {s['terms']}."
+     )
+     _print_usage({"usage": result["store"].load_usage() or {}})
+-    for path in result.get("outputs") or [result["output"]]:
++    outputs = result.get("outputs") or [result["output"]]
++    for path in outputs:
+         console.print(f"Translation: [bold]{path}[/]")
+     if result.get("review_dir"):
+         review_result = result.get("review_result") or {}
+@@ -489,6 +580,13 @@ def _translate_impl_or_raise(
+             f"suggested changes: {review_summary.get('change_count', 0)}."
+         )
+         console.print(f"Review directory: {result['review_dir']}")
++    if _json_events_enabled():
++        _json_sink().usage({"usage": result["store"].load_usage() or {}})
++        _json_sink().done(
++            outputs=[str(p) for p in outputs],
++            chapters_done=s["chapters_done"],
++            chapters_total=s["chapters_total"],
++        )
+ 
+ 
+ def _prepare_impl(input_path: str) -> None:
+@@ -500,31 +598,41 @@ def _prepare_impl(input_path: str) -> None:
+         _validate_api_configuration(config, "prepare")
+         _require_input_file(input_path)
+         orch = Orchestrator(config)
+-        with (
+-            orch.client.interrupt_scope(),
+-            Progress(
+-                *_progress_columns(),
+-                console=console,
+-            ) as prog,
+-        ):
+-            task = prog.add_task(_short_progress_description("Preparing…"), total=None)
+-
+-            def cb(done: int, total: int, label: str) -> None:
+-                """Synchronize preparation progress with the Rich task."""
+-                nonlocal task
+-                short = _short_progress_description(label)
+-                if total > 0:
+-                    prog.update(task, completed=done, total=total, description=short)
+-                    return
+-                prog.remove_task(task)
+-                task = prog.add_task(short, total=None)
+-
+-            store = orch.prepare_for_translation(input_path, progress=cb)
++        if _json_events_enabled():
++            with _progress_scope(orch, "Preparing…") as cb:
++                store = orch.prepare_for_translation(input_path, progress=cb)
++        else:
++            with (
++                orch.client.interrupt_scope(),
++                Progress(
++                    *_progress_columns(),
++                    console=console,
++                ) as prog,
++            ):
++                task = prog.add_task(_short_progress_description("Preparing…"), total=None)
++
++                def cb(done: int, total: int, label: str) -> None:
++                    """Synchronize preparation progress with the Rich task."""
++                    nonlocal task
++                    short = _short_progress_description(label)
++                    if total > 0:
++                        prog.update(task, completed=done, total=total, description=short)
++                        return
++                    prog.remove_task(task)
++                    task = prog.add_task(short, total=None)
++
++                store = orch.prepare_for_translation(input_path, progress=cb)
+     except typer.Exit:
+         raise
+     except (IngestError, ImportError, OSError, ValueError, RuntimeError) as error:
++        _emit_json_error(error)
+         console.print(f"[red]Error: {error}[/]")
+         raise typer.Exit(1) from None
++    except Exception as error:  # noqa: BLE001 - JSONL clients need a terminal event
++        if _json_events_enabled():
++            _emit_json_error(error)
++            raise typer.Exit(1) from None
++        raise
+ 
+     manifest = store.load_manifest()
+     chapters = manifest.get("chapters", [])
+@@ -540,6 +648,13 @@ def _prepare_impl(input_path: str) -> None:
+     console.print(f"State directory: [bold]{store.run_dir}[/]")
+     console.print("Run translate with the same source file to continue the full translation.")
+     _print_usage({"usage": store.load_usage() or {}})
++    if _json_events_enabled():
++        _json_sink().usage({"usage": store.load_usage() or {}})
++        _json_sink().emit(
++            "done",
++            chapters_done=digests,
++            chapters_total=len(chapters),
++        )
+ 
+ 
+ def _print_usage(report: dict) -> None:
+@@ -668,20 +783,19 @@ def review(
+         _require_input_file(input)
+         orch = Orchestrator(config)
+ 
+-        with (
+-            orch.client.interrupt_scope(),
+-            Progress(
+-                *_progress_columns(),
+-                console=console,
+-            ) as prog,
+-        ):
+-            cb = _RichProgressBridge(prog, "Preparing whole-book review…")
++        with _progress_scope(orch, "Preparing whole-book review…") as cb:
+             result = orch.run_review(input, progress=cb)
+     except typer.Exit:
+         raise
+     except (IngestError, ImportError, OSError, ValueError, RuntimeError) as error:
++        _emit_json_error(error)
+         console.print(f"[red]Error: {error}[/]")
+         raise typer.Exit(1) from None
++    except Exception as error:  # noqa: BLE001 - JSONL clients need a terminal event
++        if _json_events_enabled():
++            _emit_json_error(error)
++            raise typer.Exit(1) from None
++        raise
+ 
+     review_result = result["review_result"]
+     summary = review_result["summary"]
+@@ -701,6 +815,14 @@ def review(
+             "Review produced recommendations only; formal chapter translations are unchanged."
+         )
+     console.print(f"Review directory: {result['review_dir']}")
++    if _json_events_enabled():
++        _json_sink().emit(
++            "done",
++            termination=review_result.get("termination"),
++            issues=summary.get("issue_count"),
++            suggested_changes=summary.get("change_count"),
++            review_dir=result.get("review_dir"),
++        )
+ 
+ 
+ # ── Inspection / Individual stages ──────────────────────────────────────────────────────
