@@ -22,7 +22,7 @@ use std::path::PathBuf;
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_dialog::{DialogExt, FilePath};
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_shell::process::{CommandChild, CommandEvent};
@@ -933,8 +933,23 @@ pub fn run() {
             test_connection,
             cancel,
         ])
-        .run(tauri::generate_context!())
-        .expect("error while running Wenyi Desktop");
+        .build(tauri::generate_context!())
+        .expect("error while building Wenyi Desktop")
+        .run(|app, event| {
+            // Kill the engine when the application exits. Without this the sidecar is
+            // orphaned: it keeps translating with no window to report to, holds a lock on its
+            // own executable so an update cannot replace it, and keeps spending on the
+            // provider. Completed batches are checkpointed, so stopping loses at most the
+            // batch in flight.
+            if let tauri::RunEvent::ExitRequested { .. } | tauri::RunEvent::Exit = event {
+                if let Some(state) = app.try_state::<SidecarState>() {
+                    let child = state.0.lock().unwrap().take();
+                    if let Some(child) = child {
+                        let _ = child.kill();
+                    }
+                }
+            }
+        });
 }
 
 #[cfg(test)]
