@@ -292,13 +292,25 @@
         </div>
 
         <div class="card">
-          <h2>网络</h2>
+          <h2>网络与性能</h2>
           <div class="row">
             <label class="grow"
               >HTTP 代理（可选，例如 http://127.0.0.1:10808）
               <input type="text" id="proxy" placeholder="留空表示直连" spellcheck="false" />
             </label>
           </div>
+          <div class="row">
+            <label class="grow"
+              >每次请求的原文长度（字符）
+              <input type="number" id="batch-chars" min="200" max="8000" step="100" />
+            </label>
+          </div>
+          <p class="muted note">
+            默认 1800。**调小它是解决 <code>504 Gateway Time-out</code> 的主要办法**：
+            引擎用非流式请求，模型生成期间链路上没有任何数据流动，前面的负载均衡
+            等超时就会掐断连接。请求越短，越容易在超时前返回；失败时浪费的额度也更少。
+            中文长篇小说建议 600–1200。
+          </p>
           <p class="muted note">设置会自动保存，并在下一次运行时生效。</p>
         </div>
 

@@ -480,7 +480,24 @@ fn explain_engine_error(detail: &str) -> String {
              （引擎原文：{detail}）"
         );
     }
-    if lower.contains("mineru_api_key") || lower.contains("api token not provided") {
+    // A gateway timing out mid-request, not a quota problem: the engine sends
+    // non-streaming requests, so a slow model means silence on the wire until an idle
+    // timeout in front of it cuts the connection.
+    if lower.contains("504")
+        || lower.contains("gateway")
+        || lower.contains("retries exhausted")
+        || lower.contains("timeout")
+    {
+        return format!(
+            "模型响应太慢，被前面的网关（负载均衡）掐断了连接——这不是限流（限流是 429）。\n\
+             引擎用非流式请求，模型生成期间链路上没有数据流动，网关等够超时就断。\n\
+             按有效性：\n\
+             1) 到「设置 → 网络与性能」把「每次请求的原文长度」调小（例如 600–900）；\n\
+             2) 暂时关闭「润色」和「全书审校」，先把基础译文跑完；\n\
+             3) 换一个更快、非推理型的模型（推理模型静默期最长）。\n\
+             已完成的批次都已存档，重跑会从断点继续。\n（引擎原文：{detail}）"
+        );
+    }    if lower.contains("mineru_api_key") || lower.contains("api token not provided") {
         return format!(
             "PDF 输入需要 MinerU 密钥，它和翻译模型密钥是两个东西。请到「设置 → PDF 输入所需\
              （MinerU）」填入。若不想申请，可先把 PDF 转成 EPUB/DOCX/TXT。\n（引擎原文：{detail}）"

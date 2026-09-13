@@ -47,6 +47,11 @@ pub struct Settings {
     pub proxy: String,
     pub polish: bool,
     pub review: bool,
+    /// Source characters per translation request. Lower values keep each request short,
+    /// which is the practical remedy when a gateway in front of the model times out (504):
+    /// the engine sends non-streaming requests, so a slow model produces total silence on
+    /// the wire and an idle-timeout load balancer will cut the connection.
+    pub batch_chars: u32,
     pub bilingual: bool,
     pub mono: bool,
     pub book_understanding: bool,
@@ -65,6 +70,7 @@ impl Default for Settings {
             proxy: String::new(),
             polish: true,
             review: true,
+            batch_chars: DEFAULT_BATCH_CHARS,
             bilingual: false,
             mono: true,
             book_understanding: true,
@@ -74,6 +80,12 @@ impl Default for Settings {
 
 /// Storage name used for a custom endpoint's key when the user has not chosen one.
 pub const DEFAULT_CUSTOM_KEY_ENV: &str = "CUSTOM_API_KEY";
+
+/// Matches the engine's own default (`segment.max_chars_per_batch`).
+pub const DEFAULT_BATCH_CHARS: u32 = 1800;
+/// Guards against a value so small that a single paragraph cannot fit in one request.
+const MIN_BATCH_CHARS: u32 = 200;
+const MAX_BATCH_CHARS: u32 = 8000;
 
 impl Settings {
     /// Credential name (an environment-variable name) under which this configuration's API
@@ -295,11 +307,14 @@ pub fn render_config_yaml(settings: &Settings, custom_key_stored: bool) -> Strin
          \n\
          {llm}\
          \n\
+         segment:\n  max_chars_per_batch: {batch}\n\
+         \n\
          pipeline:\n  review: {review}\n  polish: {polish}\n  book_understanding: {understanding}\n\
          \n\
          output:\n  mono: {mono}\n  bilingual: {bilingual}\n  bilingual_order: target_first\n  about_page: true\n",
         source = yaml_scalar(&settings.source_lang),
         target = yaml_scalar(&settings.target_lang),
+        batch = settings.batch_chars.clamp(MIN_BATCH_CHARS, MAX_BATCH_CHARS),
         review = settings.review,
         polish = settings.polish,
         understanding = settings.book_understanding,
@@ -540,12 +555,35 @@ mod tests {
             }
             let section = line.trim_end_matches(':');
             assert!(
-                ["language", "llm", "pipeline", "output"].contains(&section),
+                ["language", "llm", "segment", "pipeline", "output"].contains(&section),
                 "unexpected top-level section: {line}"
             );
         }
     }
 
+    #[test]
+    fn batch_size_is_emitted_into_the_segment_section() {
+        let mut s = Settings::default();
+        // The engine's own default, so an untouched app emits the same behaviour.
+        assert_eq!(s.batch_chars, 1800);
+        assert!(render_config_yaml(&s, false).contains("max_chars_per_batch: 1800"));
+
+        // Lower is the documented remedy for a gateway timing out mid-request.
+        s.batch_chars = 600;
+        assert!(render_config_yaml(&s, false).contains("max_chars_per_batch: 600"));
+    }
+
+    #[test]
+    fn batch_size_is_clamped_to_a_usable_range() {
+        let mut s = Settings::default();
+
+        // Zero or absurdly small values would make a single paragraph untranslatable.
+        s.batch_chars = 0;
+        assert!(render_config_yaml(&s, false).contains(&format!("max_chars_per_batch: {MIN_BATCH_CHARS}")));
+
+        s.batch_chars = 999_999;
+        assert!(render_config_yaml(&s, false).contains(&format!("max_chars_per_batch: {MAX_BATCH_CHARS}")));
+    }
     #[test]
     fn yaml_scalars_are_escaped() {
         let mut s = Settings::default();

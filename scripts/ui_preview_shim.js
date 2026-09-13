@@ -29,6 +29,7 @@
     customModel: "",
     customKeyEnv: "",
     proxy: "",
+    batchChars: 900,
     polish: true,
     review: true,
     bookUnderstanding: true,

@@ -160,6 +160,7 @@ function applySettingsToForm(s) {
   $("custom-base-url").value = s.customBaseUrl;
   $("custom-key-env").value = s.customKeyEnv;
   $("proxy").value = s.proxy;
+  $("batch-chars").value = s.batchChars || 1800;
   $("polish").checked = s.polish;
   $("review").checked = s.review;
   $("book-understanding").checked = s.bookUnderstanding;
@@ -178,6 +179,7 @@ function readSettingsFromForm() {
     customModel: state.settings?.customModel || "",
     customKeyEnv: $("custom-key-env").value.trim(),
     proxy: $("proxy").value.trim(),
+    batchChars: Number($("batch-chars").value) || 1800,
     polish: $("polish").checked,
     review: $("review").checked,
     bookUnderstanding: $("book-understanding").checked,
@@ -610,6 +612,7 @@ const AUTO_SAVE_IDS = [
   "book-understanding",
   "bilingual",
   "proxy",
+  "batch-chars",
   "custom-base-url",
   "model-override",
 ];
