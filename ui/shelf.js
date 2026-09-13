@@ -154,7 +154,6 @@ const SHELF = (() => {
     empty.hidden = hasBooks;
     shelf.hidden = !hasBooks;
     addButton.hidden = !hasBooks;
-    if (window.__runningGuard) window.__runningGuard();
 
     list.textContent = "";
     // A single book is shown at full size; only from two onward is it a shelf of spines.
@@ -163,6 +162,10 @@ const SHELF = (() => {
   }
 
   function select(input) {
+    // Re-selecting the book that is already selected is a no-op, not a forbidden switch. With
+    // a single book on the shelf this was the only thing a click could do, so every click on
+    // the sole book was answered with "cannot switch books while translating".
+    if (input === selected) return;
     if (window.__runningGuard && !window.__runningGuard()) return;
     selected = input;
     for (const item of document.querySelectorAll(".book")) {

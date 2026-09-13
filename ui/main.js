@@ -127,7 +127,9 @@ function setRunning(running) {
     startChapterPoll();
   } else {
     stopChapterPoll();
-    progressState = { label: "", done: 0, total: 0, chaptersDone: 0, chaptersTotal: 0 };
+    // The readout is deliberately left alone. It is the answer to "how far did it get", which
+    // is exactly what the user looks for once a run ends - and `startRun` already clears it
+    // when a new run begins, so nothing stale can survive into the next one.
   }
   updateProgressDetail();
 }
@@ -684,6 +686,12 @@ function handleEvent(payload) {
       break;
     case "terminated":
       log(`引擎退出，退出码 ${payload.exitCode}`, "engine");
+      // Reset here instead of relying on run_engine's promise settling. The shell only sees the
+      // PyInstaller bootloader exit; if the real engine outlives it, that promise never resolves
+      // and the window stays in the running state - start disabled, every book click refused,
+      // and only Cancel able to clear it. Ending a run must not depend on one code path.
+      setRunning(false);
+      refreshRuns();
       break;
     case "stderr":
       log(payload.message, "engine");
