@@ -103,7 +103,10 @@ const SHELF = (() => {
       bar.append(fill);
       const sub = document.createElement("div");
       sub.className = "book-sub muted";
-      sub.textContent = `${book.chaptersDone}/${book.chaptersTotal} 章`;
+      // "11/21 章" alone sat directly above the run line's "第 12/21 章" and read as a
+      // contradiction: the two numbers measure different things (finished vs in progress),
+      // but the shared notation made them look like the same counter disagreeing with itself.
+      sub.textContent = `已完成 ${book.chaptersDone}/${book.chaptersTotal} 章`;
       meta.append(bar, sub);
     } else {
       const sub = document.createElement("div");

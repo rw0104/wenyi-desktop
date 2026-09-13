@@ -282,7 +282,9 @@ function updateProgressDetail() {
   }
   if (progressState.chaptersTotal > 0) {
     const current = Math.min(progressState.chaptersDone + 1, progressState.chaptersTotal);
-    parts.push(`第 ${current}/${progressState.chaptersTotal} 章`);
+    // Named rather than bare: the shelf shows finished chapters with the same "N/M" shape, so
+    // an unlabelled number here reads as that counter contradicting itself.
+    parts.push(`正在翻译第 ${current} 章（共 ${progressState.chaptersTotal} 章）`);
   }
   detail.textContent = parts.join(" · ");
 }
