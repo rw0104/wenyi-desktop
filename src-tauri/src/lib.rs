@@ -337,6 +337,12 @@ async fn test_connection(
     ephemeral_api_key: Option<String>,
 ) -> Result<TestResult, String> {
     let user_settings = settings::load(&app)?;
+    let key_stored = secrets::get(&user_settings.api_key_env()).is_some();
+    let ephemeral = ephemeral_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty());
+    user_settings.validate_for_run(key_stored || ephemeral.is_some())?;
     let env = engine_env(&user_settings, ephemeral_api_key.as_deref())?;
 
     let dir = std::env::temp_dir().join("wenyi-connection-test");
@@ -375,9 +381,11 @@ async fn test_connection(
 
     let mut result = TestResult {
         ok: false,
-        message: "The engine stopped without reporting a result.".into(),
+        message: "引擎没有返回任何结果就退出了。这通常意味着配置在启动阶段就被拒绝了，但错误信息没有被捕获到。"
+            .into(),
     };
     let mut finished = false;
+    let mut last_stderr: Option<String> = None;
 
     while let Some(event) = rx.recv().await {
         match event {
@@ -416,18 +424,31 @@ async fn test_connection(
                 }
             }
             CommandEvent::Stderr(bytes) => {
-                // Keep the last meaningful stderr line: it carries errors that never
-                // reached the event stream (for example a startup failure).
+                // Configuration failures abort before any JSONL is written, so stderr is the
+                // only evidence. Keep every meaningful line rather than matching one prefix:
+                // the engine says "Configuration error: ..." for these, not "Error: ...".
                 let text = String::from_utf8_lossy(&bytes);
                 for raw in text.lines() {
-                    if let Some(rest) = raw.trim().strip_prefix("Error: ") {
-                        if !finished {
-                            result.message = explain_engine_error(rest);
-                        }
+                    let line = raw.trim();
+                    if line.len() < 8 {
+                        continue;
                     }
+                    last_stderr = Some(line.to_string());
                 }
             }
-            CommandEvent::Terminated(_) => break,
+            CommandEvent::Terminated(payload) => {
+                if !finished {
+                    if let Some(detail) = last_stderr.as_deref() {
+                        result.message = explain_engine_error(detail);
+                    } else {
+                        result.message = format!(
+                            "引擎退出（退出码 {:?}）但没有返回任何事件，也没有错误输出。",
+                            payload.code
+                        );
+                    }
+                }
+                break;
+            }
             _ => {}
         }
         if finished {
@@ -595,8 +616,16 @@ async fn run_engine(
     }
 
     let user_settings = settings::load(&app)?;
-    // Keep config.yaml in step with settings even if the UI never pressed Save.
     let key_stored = secrets::get(&user_settings.api_key_env()).is_some();
+    // Refuse a configuration that would make the engine exit before emitting any event:
+    // those failures surface as an unexplained "engine stopped" with no detail.
+    let ephemeral = request
+        .ephemeral_api_key
+        .as_deref()
+        .map(str::trim)
+        .filter(|k| !k.is_empty());
+    user_settings.validate_for_run(key_stored || ephemeral.is_some())?;
+    // Keep config.yaml in step with settings even if the UI never pressed Save.
     settings::write_engine_config(&app, &user_settings, key_stored)?;
 
     let workspace = settings::workspace_dir(&app)?;

@@ -104,6 +104,54 @@ impl Settings {
     pub fn requires_api_key(&self) -> bool {
         self.provider != "custom"
     }
+
+    /// The model id this configuration will actually request.
+    ///
+    /// One field serves every provider: for the built-in presets it replaces the pinned
+    /// model, and for a custom endpoint it is the model id. `custom_model` is still read as
+    /// a fallback so settings written by an earlier build keep working.
+    pub fn model_id(&self) -> String {
+        let override_model = self.model_override.trim();
+        if !override_model.is_empty() {
+            return override_model.to_string();
+        }
+        if self.provider == "custom" {
+            return self.custom_model.trim().to_string();
+        }
+        String::new()
+    }
+
+    /// Reject a configuration that would make the engine exit before emitting any event.
+    ///
+    /// A configuration-level failure produces no JSONL at all, so the shell can only report
+    /// a generic "engine stopped" message. Catching these here turns each one into a
+    /// specific instruction instead.
+    pub fn validate_for_run(&self, key_stored: bool) -> Result<(), String> {
+        if self.provider == "custom" {
+            if self.custom_base_url.trim().is_empty() {
+                return Err("请填写「接口地址 base_url」。".into());
+            }
+            if self.model_id().is_empty() {
+                return Err("请填写「模型 ID」——可以点「获取模型列表」从接口拉取。".into());
+            }
+            // A key is optional (local models), but the endpoint is remote and unauthenticated
+            // requests are the most common reason a run fails at the first call.
+            if !key_stored {
+                return Err(format!(
+                    "尚未存入密钥。如果 {} 需要鉴权，请把密钥填入「接口密钥」并点「存入凭据库」\
+                     （将作为 {} 发送）；本地模型可忽略此提示。",
+                    self.custom_base_url.trim(),
+                    self.api_key_env()
+                ));
+            }
+        } else if self.requires_api_key() && !key_stored {
+            return Err(format!(
+                "尚未存入 {}。请在「接口密钥」填入并点「存入凭据库」。",
+                self.api_key_env()
+            ));
+        }
+        Ok(())
+    }
 }
 
 /// Return the app data directory, creating it when missing.
@@ -227,7 +275,7 @@ pub fn render_config_yaml(settings: &Settings, custom_key_stored: bool) -> Strin
             format!(
                 "llm:\n  providers:\n    custom:\n      kind: openai-compatible\n      base_url: {}\n{key_line}  models:\n    custom_model:\n      provider: custom\n      model: {}\n  tiers:\n    strong: custom_model\n    cheap: custom_model\n    fast: custom_model\n",
                 yaml_scalar(settings.custom_base_url.trim()),
-                yaml_scalar(settings.custom_model.trim()),
+                yaml_scalar(&settings.model_id()),
             )
         }
         _ => {
@@ -296,7 +344,7 @@ pub fn describe(settings: &Settings, custom_key_stored: bool) -> EffectiveConfig
         ),
         "custom" => {
             let base = settings.custom_base_url.trim();
-            let mdl = settings.custom_model.trim();
+            let mdl = settings.model_id();
             if base.is_empty() {
                 notes.push("自定义提供方还需要填写 base_url。".into());
             }
@@ -305,7 +353,7 @@ pub fn describe(settings: &Settings, custom_key_stored: bool) -> EffectiveConfig
             }
             (
                 if base.is_empty() { "(未填写)".into() } else { base.to_string() },
-                if mdl.is_empty() { "(未填写)".into() } else { mdl.to_string() },
+                if mdl.is_empty() { "(未填写)".into() } else { mdl },
                 "openai-compatible".to_string(),
             )
         }
@@ -347,7 +395,7 @@ pub fn describe(settings: &Settings, custom_key_stored: bool) -> EffectiveConfig
         );
     }
 
-    if settings.provider != "custom" && settings.model_override.trim().is_empty() {
+    if settings.provider != "custom" && settings.model_id().is_empty() {
         notes.push(
             "当前使用引擎预设里写死的模型。如果这个模型已过时，请在上面填写模型 ID，\
              或点「获取模型列表」从接口拉取可用模型。"
@@ -518,6 +566,71 @@ mod tests {
         assert_eq!(fallback.provider, "deepseek");
     }
 
+    /// One model field serves both cases, and the legacy custom field is still honoured.
+    #[test]
+    fn model_id_resolves_for_every_provider() {
+        let mut s = Settings::default();
+        // No override: a preset has no explicit model, which is what marks it as defaulted.
+        assert_eq!(s.model_id(), "");
+
+        s.model_override = "deepseek-chat".into();
+        assert_eq!(s.model_id(), "deepseek-chat");
+
+        // Custom falls back to its own field so settings from an earlier build still work.
+        s.provider = "custom".into();
+        s.model_override = String::new();
+        s.custom_model = "legacy-model".into();
+        assert_eq!(s.model_id(), "legacy-model");
+
+        // The shared field wins when both are present.
+        s.model_override = "new-model".into();
+        assert_eq!(s.model_id(), "new-model");
+    }
+
+    /// A custom endpoint that would produce `model: ""` makes the engine abort during
+    /// config validation with no JSONL at all, which the shell can only report vaguely.
+    #[test]
+    fn a_custom_endpoint_without_a_model_is_rejected_before_running() {
+        let mut s = Settings::default();
+        s.provider = "custom".into();
+        s.custom_base_url = "https://relay.example/v1".into();
+        s.custom_key_env = "RELAY_KEY".into();
+
+        let error = s.validate_for_run(true).unwrap_err();
+        assert!(error.contains("模型 ID"), "got {error}");
+
+        s.model_override = "some-model".into();
+        assert!(s.validate_for_run(true).is_ok());
+    }
+
+    #[test]
+    fn a_custom_endpoint_without_a_base_url_is_rejected() {
+        let mut s = Settings::default();
+        s.provider = "custom".into();
+        s.model_override = "some-model".into();
+        let error = s.validate_for_run(true).unwrap_err();
+        assert!(error.contains("base_url"), "got {error}");
+    }
+
+    /// The key is optional for a custom endpoint (local models), but running a remote
+    /// endpoint with nothing stored is the most common failure and is named explicitly.
+    #[test]
+    fn an_unsaved_key_is_reported_with_the_variable_name() {
+        let mut s = Settings::default();
+        s.provider = "custom".into();
+        s.custom_base_url = "https://relay.example/v1".into();
+        s.model_override = "some-model".into();
+        s.custom_key_env = "RELAY_KEY".into();
+
+        let error = s.validate_for_run(false).unwrap_err();
+        assert!(error.contains("RELAY_KEY"), "got {error}");
+
+        // Hosted providers still require a key.
+        let mut hosted = Settings::default();
+        let hosted_error = hosted.validate_for_run(false).unwrap_err();
+        assert!(hosted_error.contains("DEEPSEEK_API_KEY"), "got {hosted_error}");
+        assert!(hosted.validate_for_run(true).is_ok());
+    }
     #[test]
     fn deepseek_describe_reports_the_official_endpoint() {
         let eff = describe(&Settings::default(), false);

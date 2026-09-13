@@ -141,9 +141,12 @@ const PROVIDER_KEYS = {
   custom: null, // resolved from the custom-key-env field
 };
 
+/** Credential name the key is stored under. Mirrors Settings::api_key_env in Rust. */
 function currentKeyAccount() {
   const provider = $("provider").value;
-  if (provider === "custom") return $("custom-key-env").value.trim();
+  if (provider === "custom") {
+    return $("custom-key-env").value.trim() || DEFAULT_CUSTOM_KEY_ENV;
+  }
   return PROVIDER_KEYS[provider];
 }
 
@@ -151,9 +154,10 @@ function applySettingsToForm(s) {
   $("source-lang").value = s.sourceLang;
   $("target-lang").value = s.targetLang;
   $("provider").value = s.provider;
-  $("model-override").value = s.modelOverride || "";
+  state.settings = s;
+  // Show whatever will actually be requested, including a legacy custom model id.
+  $("model-override").value = s.modelOverride || s.customModel || "";
   $("custom-base-url").value = s.customBaseUrl;
-  $("custom-model").value = s.customModel;
   $("custom-key-env").value = s.customKeyEnv;
   $("proxy").value = s.proxy;
   $("polish").checked = s.polish;
@@ -170,7 +174,8 @@ function readSettingsFromForm() {
     provider: $("provider").value,
     modelOverride: $("model-override").value.trim(),
     customBaseUrl: $("custom-base-url").value.trim(),
-    customModel: $("custom-model").value.trim(),
+    // Legacy field: settings written before the model field was unified still carry it.
+    customModel: state.settings?.customModel || "",
     customKeyEnv: $("custom-key-env").value.trim(),
     proxy: $("proxy").value.trim(),
     polish: $("polish").checked,
@@ -183,11 +188,11 @@ function readSettingsFromForm() {
 }
 
 const MINERU_ACCOUNT = "MINERU_API_KEY";
+const DEFAULT_CUSTOM_KEY_ENV = "CUSTOM_API_KEY";
 
 function syncProviderFields() {
   const provider = $("provider").value;
   $("custom-fields").hidden = provider !== "custom";
-  $("model-row").hidden = provider === "custom";
   $("key-label").textContent =
     provider === "custom"
       ? "自定义接口密钥（本地模型可留空不设置）"
@@ -606,7 +611,6 @@ const AUTO_SAVE_IDS = [
   "bilingual",
   "proxy",
   "custom-base-url",
-  "custom-model",
   "model-override",
 ];
 
@@ -712,7 +716,7 @@ async function init() {
     refreshEffective();
     saveSettings();
   });
-  for (const id of ["custom-base-url", "custom-model", "model-override"]) {
+  for (const id of ["custom-base-url", "model-override"]) {
     $(id).addEventListener("change", refreshEffective);
   }
   $("fetch-models").addEventListener("click", fetchModels);

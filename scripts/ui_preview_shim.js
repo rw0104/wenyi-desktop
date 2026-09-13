@@ -23,10 +23,10 @@
   const settings = {
     sourceLang: "auto",
     targetLang: "zh",
-    provider: "deepseek",
-    modelOverride: "",
+    provider: "custom",
+    modelOverride: "deepseek-v4-pro-0813",
     customBaseUrl: "https://tokenrhythm.studio/v1",
-    customModel: "deepseek-v4-pro-0813",
+    customModel: "",
     customKeyEnv: "",
     proxy: "",
     polish: true,
@@ -37,14 +37,13 @@
   };
 
   const effective = {
-    endpoint: "https://api.deepseek.com",
-    model: "deepseek-flash (预设默认，较旧)",
-    providerKind: "deepseek",
-    apiKeyEnv: "DEEPSEEK_API_KEY",
-    customFieldsIgnored: true,
+    endpoint: "https://tokenrhythm.studio/v1",
+    model: "deepseek-v4-pro-0813",
+    providerKind: "openai-compatible",
+    apiKeyEnv: "CUSTOM_API_KEY",
+    customFieldsIgnored: false,
     notes: [
-      "The custom endpoint fields are filled in but the provider above is not \"custom\", " +
-        "so they are ignored. Choose the custom provider to use them.",
+      "尚未存入密钥：如果这个接口需要鉴权（中转站、云服务），请把密钥填入「接口密钥」并存入凭据库。本地模型不需要密钥。",
     ],
   };
 
@@ -111,7 +110,7 @@
           case "save_settings":
             return paths;
           case "api_key_status":
-            return { DEEPSEEK_API_KEY: true, MINERU_API_KEY: false };
+            return { CUSTOM_API_KEY: false, MINERU_API_KEY: false };
           case "get_effective_config":
             return effective;
           case "list_models":

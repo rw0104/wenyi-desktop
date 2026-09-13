@@ -124,6 +124,13 @@
   box-sizing: border-box;
 }
 
+/* `hidden` must win over component display rules. Without this, a `.row` (display: flex)
+ * stays visible when toggled hidden, which is how two "model id" fields ended up on
+ * screen at once and the user filled the one that was not being read. */
+[hidden] {
+  display: none !important;
+}
+
 html {
   /* Root stays at the user's text size so rem-based layout scales with it (§15). */
   font-size: 100%;
