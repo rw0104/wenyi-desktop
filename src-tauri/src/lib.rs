@@ -600,7 +600,7 @@ async fn test_connection(
             _ => {}
         }
         if finished {
-            let _ = child.kill();
+            kill_engine(child);
             break;
         }
     }
@@ -748,11 +748,90 @@ fn build_engine_args(
 
 // ── Engine control ───────────────────────────────────────────────────────────────
 
-/// Kill a running sidecar (cancel an in-flight translation).
+/// `taskkill` / `tasklist` must not flash a console window over the app.
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+
+/// Whether a process with this pid still exists.
+#[cfg(windows)]
+fn process_alive(pid: u32) -> bool {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/NH", "/FO", "CSV"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .output()
+        .map(|out| String::from_utf8_lossy(&out.stdout).contains(&pid.to_string()))
+        .unwrap_or(false)
+}
+
+/// Kill a process and every process beneath it.
+#[cfg(windows)]
+fn kill_process_tree(pid: u32) {
+    // /T = this process and its descendants, /F = force. `status()` waits, so the tree is gone
+    // by the time this returns.
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/T", "/F"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+}
+
+/// Wait for a process to disappear, up to `tries` tenths of a second.
+#[cfg(windows)]
+fn wait_until_gone(pid: u32, tries: u32) -> bool {
+    for _ in 0..tries {
+        if !process_alive(pid) {
+            return true;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    !process_alive(pid)
+}
+
+/// Stop the engine, and everything the engine started.
+///
+/// `CommandChild::kill` terminates only the process Tauri spawned, and the sidecar is built
+/// with PyInstaller `--onefile`: the executable we spawn is a bootloader that unpacks itself
+/// and starts the real engine as its own child. On Windows, terminating a parent leaves its
+/// children running, so killing the bootloader alone leaves the engine alive — still
+/// translating with no window to report to, still spending on the provider, and still writing
+/// the very state files the next run will write. Cancelling then looked like it worked while
+/// the old configuration kept being used.
+///
+/// The tree walk runs *before* `kill()`, because once the bootloader is gone there is no
+/// longer a link to walk.
+///
+/// On Unix the bootloader/child split is the same, but only the direct child is signalled
+/// here; the process-group kill lands with the multi-platform work.
+fn kill_engine(child: CommandChild) {
+    let pid = child.pid();
+
+    #[cfg(windows)]
+    kill_process_tree(pid);
+
+    let _ = child.kill();
+
+    // Do not return while the engine is still alive. A run started straight after a cancel
+    // would otherwise race the run it was supposed to replace, both writing one state tree.
+    #[cfg(windows)]
+    {
+        let _ = wait_until_gone(pid, 20);
+    }
+}
+
+/// Kill a running engine (cancel an in-flight translation).
 #[tauri::command]
 async fn cancel(state: State<'_, SidecarState>) -> Result<(), String> {
-    if let Some(child) = state.0.lock().unwrap().take() {
-        let _ = child.kill();
+    let child = state.0.lock().unwrap().take();
+    if let Some(child) = child {
+        // Off the async runtime: the tree walk blocks, and it must finish before this returns
+        // so that a run started immediately afterwards cannot overlap the one just cancelled.
+        let _ = tauri::async_runtime::spawn_blocking(move || kill_engine(child)).await;
     }
     Ok(())
 }
@@ -945,7 +1024,10 @@ pub fn run() {
                 if let Some(state) = app.try_state::<SidecarState>() {
                     let child = state.0.lock().unwrap().take();
                     if let Some(child) = child {
-                        let _ = child.kill();
+                        // The whole tree, not just the bootloader: an orphaned engine keeps a
+                        // lock on its own executable, which is what stopped an update from
+                        // replacing it.
+                        kill_engine(child);
                     }
                 }
             }
@@ -1059,5 +1141,74 @@ mod tests {
             args,
             vec!["--config", "/cfg.yaml", "--json-events", "prepare", "in.txt"]
         );
+    }
+
+    /// Regression: cancelling used to kill only the PyInstaller `--onefile` bootloader, leaving
+    /// the real engine running as an orphan. It kept translating on the configuration captured
+    /// at startup, so a user who cancelled, switched provider and started again saw the old
+    /// model keep being used — the cancel appeared to work while nothing had stopped.
+    ///
+    /// The fixture reproduces the shape rather than the sidecar itself: a parent process that
+    /// starts a child and then waits, which is exactly what `--onefile` produces.
+    #[cfg(windows)]
+    #[test]
+    fn killing_the_tree_stops_the_process_the_parent_started() {
+        let dir = std::env::temp_dir().join(format!("wenyi-kill-tree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let pid_file = dir.join("child.pid");
+        let script_file = dir.join("fixture.ps1");
+
+        let script = format!(
+            "$c = Start-Process -FilePath 'powershell' \
+             -ArgumentList '-NoProfile','-Command','Start-Sleep 120' \
+             -PassThru -WindowStyle Hidden\n\
+             Set-Content -Path '{}' -Value $c.Id\n\
+             Start-Sleep 120\n",
+            pid_file.display()
+        );
+        std::fs::write(&script_file, script).unwrap();
+
+        let mut parent = std::process::Command::new("powershell")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-File",
+                &script_file.to_string_lossy(),
+            ])
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .expect("could not start the fixture");
+        let parent_pid = parent.id();
+
+        let mut child_pid = 0u32;
+        for _ in 0..100 {
+            if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                if let Ok(id) = text.trim().parse::<u32>() {
+                    child_pid = id;
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        assert!(child_pid != 0, "the fixture never reported its child process");
+
+        kill_process_tree(parent_pid);
+
+        assert!(
+            wait_until_gone(parent_pid, 30),
+            "the parent survived the kill"
+        );
+        assert!(
+            wait_until_gone(child_pid, 30),
+            "the child outlived its parent - this is the orphan that kept translating"
+        );
+
+        let _ = parent.wait();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
