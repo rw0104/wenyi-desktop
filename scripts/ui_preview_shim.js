@@ -17,19 +17,34 @@
     historyFile: "C:\\Users\\you\\AppData\\Roaming\\com.wenyi.desktop\\history.json",
   };
 
+  // Mirrors the real configuration that caused a user to believe their relay endpoint was
+  // in use: custom fields filled in, provider left on DeepSeek. The preview therefore shows
+  // the warning that is supposed to prevent exactly that misunderstanding.
   const settings = {
-    sourceLang: "ja",
+    sourceLang: "auto",
     targetLang: "zh",
     provider: "deepseek",
-    customBaseUrl: "",
-    customModel: "",
+    customBaseUrl: "https://tokenrhythm.studio/v1",
+    customModel: "deepseek-v4-pro-0813",
     customKeyEnv: "",
-    proxy: "http://127.0.0.1:10808",
+    proxy: "",
     polish: true,
     review: true,
     bookUnderstanding: true,
-    bilingual: true,
+    bilingual: false,
     mono: true,
+  };
+
+  const effective = {
+    endpoint: "https://api.deepseek.com",
+    model: "deepseek-flash",
+    providerKind: "deepseek",
+    apiKeyEnv: "DEEPSEEK_API_KEY",
+    customFieldsIgnored: true,
+    notes: [
+      "The custom endpoint fields are filled in but the provider above is not \"custom\", " +
+        "so they are ignored. Choose the custom provider to use them.",
+    ],
   };
 
   const runs = [
@@ -95,7 +110,11 @@
           case "save_settings":
             return paths;
           case "api_key_status":
-            return { DEEPSEEK_API_KEY: true };
+            return { DEEPSEEK_API_KEY: true, MINERU_API_KEY: false };
+          case "get_effective_config":
+            return effective;
+          case "test_connection":
+            return { ok: false, message: "The endpoint rejected the API key. Check that the key belongs to the endpoint shown above." };
           case "list_runs":
             return runs;
           case "pick_input_file":
@@ -130,21 +149,32 @@
     document.getElementById("file-name").textContent = "D:\\Books\\Kokoro.epub";
     document.getElementById("open-input-dir").disabled = false;
 
+    // Open on Settings so the resolved request target and the ignored-field warning are
+    // the visible subject of the preview.
+    const active = document.querySelector(".tab.active");
+    if (active) {
+      active.classList.remove("active");
+      active.setAttribute("aria-selected", "false");
+    }
+    const settingsTab = document.querySelector('[data-tab="settings"]');
+    if (settingsTab) {
+      settingsTab.classList.add("active");
+      settingsTab.setAttribute("aria-selected", "true");
+    }
+    for (const panel of document.querySelectorAll(".panel")) {
+      panel.classList.toggle("active", panel.id === "panel-settings");
+    }
+
     emit({ event: "started", input: "D:\\Books\\Kokoro.epub", command: "translate" });
     emit({ event: "stage", label: "Parsing document…" });
-    emit({ event: "stage", label: "Analyzing book style…" });
-    emit({ event: "progress", done: 3, total: 3, label: "Prescanning chapter digests" });
+    emit({
+      event: "error",
+      message:
+        "PDF input needs a MinerU key, which is separate from the translation model key. " +
+        "Add it under Settings.",
+    });
     emit({ event: "progress", done: 68, total: 110, label: "心 · 第二十三章" });
     emit({ event: "usage", usage: { totals: { total_tokens: 486213 } } });
-
     await sleep(40);
-    const active = document.querySelector(".tab.active");
-    if (active) active.classList.remove("active");
-    const translateTab = document.querySelector('[data-tab="translate"]');
-    if (translateTab) translateTab.classList.add("active");
-    const panel = document.getElementById("panel-translate");
-    if (panel) panel.classList.add("active");
-
-    emit({ event: "progress", done: 68, total: 110, label: "心 · 第二十三章" });
   });
 })();

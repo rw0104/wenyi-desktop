@@ -202,6 +202,76 @@ pub fn render_config_yaml(settings: &Settings) -> String {
     )
 }
 
+/// How the current settings will actually be used, for display in the UI.
+///
+/// This exists because the provider selector decides everything: values typed into the
+/// custom endpoint fields are stored but ignored unless the provider is set to `custom`.
+/// Showing the resolved target, and calling out ignored input, is what stops a user from
+/// believing their endpoint is in use when it is not.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct EffectiveConfig {
+    pub endpoint: String,
+    pub model: String,
+    pub provider_kind: String,
+    pub api_key_env: String,
+    /// True when the custom fields hold values that this configuration will not use.
+    pub custom_fields_ignored: bool,
+    /// Human-readable warnings worth surfacing next to the setting.
+    pub notes: Vec<String>,
+}
+
+pub fn describe(settings: &Settings) -> EffectiveConfig {
+    let custom_filled = !settings.custom_base_url.trim().is_empty()
+        || !settings.custom_model.trim().is_empty();
+    let mut notes = Vec::new();
+
+    let (endpoint, model, provider_kind) = match settings.provider.as_str() {
+        "gemini" => (
+            "generativelanguage.googleapis.com".to_string(),
+            "preset default".to_string(),
+            "gemini".to_string(),
+        ),
+        "custom" => {
+            let base = settings.custom_base_url.trim();
+            let mdl = settings.custom_model.trim();
+            if base.is_empty() {
+                notes.push("Custom provider needs a base_url.".into());
+            }
+            if mdl.is_empty() {
+                notes.push("Custom provider needs a model id.".into());
+            }
+            (
+                if base.is_empty() { "(not set)".into() } else { base.to_string() },
+                if mdl.is_empty() { "(not set)".into() } else { mdl.to_string() },
+                "openai-compatible".to_string(),
+            )
+        }
+        _ => (
+            "https://api.deepseek.com".to_string(),
+            "deepseek-flash".to_string(),
+            "deepseek".to_string(),
+        ),
+    };
+
+    if custom_filled && settings.provider != "custom" {
+        notes.push(
+            "The custom endpoint fields are filled in but the provider above is not \
+             \"custom\", so they are ignored. Choose the custom provider to use them."
+                .into(),
+        );
+    }
+
+    EffectiveConfig {
+        endpoint,
+        model,
+        provider_kind,
+        api_key_env: settings.api_key_env(),
+        custom_fields_ignored: custom_filled && settings.provider != "custom",
+        notes,
+    }
+}
+
 /// Append or refresh one entry in the run history so interrupted work can be resumed.
 pub fn remember_run(app: &AppHandle, input: &str, command: &str, at: &str) -> Result<(), String> {
     let path = history_path(app)?;
@@ -340,5 +410,67 @@ mod tests {
         let fallback = parsed.unwrap_or_default();
         assert_eq!(fallback.target_lang, "zh");
         assert_eq!(fallback.provider, "deepseek");
+    }
+
+    #[test]
+    fn deepseek_describe_reports_the_official_endpoint() {
+        let eff = describe(&Settings::default());
+        assert_eq!(eff.endpoint, "https://api.deepseek.com");
+        assert_eq!(eff.model, "deepseek-flash");
+        assert_eq!(eff.api_key_env, "DEEPSEEK_API_KEY");
+        assert!(!eff.custom_fields_ignored);
+        assert!(eff.notes.is_empty());
+    }
+
+    /// The exact situation that made a user believe their relay was in use when the app
+    /// was calling the official endpoint with a relay key.
+    #[test]
+    fn custom_fields_filled_while_provider_is_not_custom_are_reported_as_ignored() {
+        let mut s = Settings::default();
+        s.custom_base_url = "https://relay.example/v1".into();
+        s.custom_model = "some-model".into();
+        // provider stays "deepseek"
+        let eff = describe(&s);
+
+        assert!(eff.custom_fields_ignored);
+        assert_eq!(eff.endpoint, "https://api.deepseek.com");
+        assert_eq!(eff.model, "deepseek-flash");
+        assert_eq!(eff.notes.len(), 1);
+        assert!(eff.notes[0].contains("ignored"));
+    }
+
+    #[test]
+    fn selecting_the_custom_provider_uses_the_typed_values() {
+        let mut s = Settings::default();
+        s.provider = "custom".into();
+        s.custom_base_url = "https://relay.example/v1".into();
+        s.custom_model = "some-model".into();
+        s.custom_key_env = "RELAY_KEY".into();
+        let eff = describe(&s);
+
+        assert!(!eff.custom_fields_ignored);
+        assert_eq!(eff.endpoint, "https://relay.example/v1");
+        assert_eq!(eff.model, "some-model");
+        assert_eq!(eff.api_key_env, "RELAY_KEY");
+        assert!(eff.notes.is_empty());
+    }
+
+    #[test]
+    fn custom_provider_missing_fields_is_called_out() {
+        let mut s = Settings::default();
+        s.provider = "custom".into();
+        let eff = describe(&s);
+        assert_eq!(eff.endpoint, "(not set)");
+        assert_eq!(eff.model, "(not set)");
+        assert_eq!(eff.notes.len(), 2);
+    }
+
+    #[test]
+    fn gemini_describe_uses_its_own_key_variable() {
+        let mut s = Settings::default();
+        s.provider = "gemini".into();
+        let eff = describe(&s);
+        assert_eq!(eff.api_key_env, "GEMINI_API_KEY");
+        assert_eq!(eff.provider_kind, "gemini");
     }
 }

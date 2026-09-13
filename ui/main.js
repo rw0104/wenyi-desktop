@@ -180,6 +180,8 @@ function readSettingsFromForm() {
   };
 }
 
+const MINERU_ACCOUNT = "MINERU_API_KEY";
+
 function syncProviderFields() {
   const provider = $("provider").value;
   $("custom-fields").hidden = provider !== "custom";
@@ -190,36 +192,123 @@ function syncProviderFields() {
         ? "Gemini API Key"
         : "DeepSeek API Key";
   refreshKeyStatus();
+  refreshEffective();
+}
+
+/**
+ * Show what the engine will actually request.
+ *
+ * The provider selector decides everything, so without this a user can fill in the custom
+ * endpoint fields, leave the provider on DeepSeek, and believe their endpoint is in use
+ * while every request goes to api.deepseek.com instead.
+ */
+async function refreshEffective() {
+  try {
+    const eff = await call("get_effective_config", { settings: readSettingsFromForm() });
+    $("eff-endpoint").textContent = eff.endpoint;
+    $("eff-model").textContent = eff.model;
+    const notes = $("eff-notes");
+    if (eff.notes && eff.notes.length) {
+      notes.innerHTML = eff.notes.map(escapeHtml).join("<br>");
+      notes.hidden = false;
+    } else {
+      notes.hidden = true;
+    }
+  } catch (error) {
+    $("eff-endpoint").textContent = "—";
+    $("eff-model").textContent = "—";
+  }
 }
 
 async function refreshKeyStatus() {
-  const account = currentKeyAccount();
-  const badge = $("key-status");
-  updateSaveKeyButton();
-  if (!account) {
-    badge.textContent = "无需密钥";
-    badge.className = "badge ok";
-    return;
-  }
-  try {
-    const status = await call("api_key_status", { accounts: [account] });
-    if (status[account]) {
-      badge.textContent = "已存入凭据库";
-      badge.className = "badge ok";
-    } else {
-      badge.textContent = "未设置";
-      badge.className = "badge missing";
-    }
-  } catch (error) {
-    badge.textContent = "无法读取";
-    badge.className = "badge unknown";
-    log("密钥状态读取失败: " + error, "error");
-  }
+  await refreshModelKeyStatus();
 }
 
-/** Inline affordance: the button is only actionable once there is something to save. */
-function updateSaveKeyButton() {
-  $("save-key").disabled = !currentKeyAccount() || !$("api-key").value.trim();
+let refreshModelKeyStatus = async () => {};
+let refreshMineruStatus = async () => {};
+
+/**
+ * Wire one credential row: status badge, save, clear.
+ * Shared by the translation-model key and the MinerU key so they behave identically.
+ */
+function wireCredential({ accountName, input, status, save, clear, label }) {
+  const resolve = () =>
+    typeof accountName === "function" ? accountName() : accountName;
+
+  const refresh = async () => {
+    const badge = $(status);
+    const name = resolve();
+    if (!name) {
+      badge.textContent = "无需密钥";
+      badge.className = "badge ok";
+      $(save).disabled = true;
+      return;
+    }
+    try {
+      const map = await call("api_key_status", { accounts: [name] });
+      badge.textContent = map[name] ? "已存入凭据库" : "未设置";
+      badge.className = map[name] ? "badge ok" : "badge missing";
+    } catch (error) {
+      badge.textContent = "无法读取";
+      badge.className = "badge unknown";
+    }
+    $(save).disabled = !$(input).value.trim();
+  };
+
+  $(save).addEventListener("click", async () => {
+    const name = resolve();
+    const secret = $(input).value.trim();
+    if (!name || !secret) return;
+    try {
+      await call("set_api_key", { account: name, secret });
+      $(input).value = "";
+      flashSaved(`${label}已保存`);
+      await refresh();
+    } catch (error) {
+      log(`保存${label}失败: ` + error, "error");
+    }
+  });
+
+  $(clear).addEventListener("click", async () => {
+    const name = resolve();
+    if (!name) return;
+    try {
+      await call("clear_api_key", { account: name });
+      flashSaved(`${label}已清除`);
+      await refresh();
+    } catch (error) {
+      log(`清除${label}失败: ` + error, "error");
+    }
+  });
+
+  $(input).addEventListener("input", () => {
+    $(save).disabled = !$(input).value.trim();
+  });
+
+  return refresh;
+}
+
+async function runConnectionTest() {
+  const button = $("test-connection");
+  const out = $("test-result");
+  button.disabled = true;
+  out.className = "muted";
+  out.textContent = "正在测试…";
+  try {
+    await saveSettings();
+    const result = await call("test_connection", {
+      ephemeralApiKey: $("api-key").value.trim() || null,
+    });
+    out.className = result.ok ? "ok" : "error";
+    out.textContent = result.ok ? "连接正常 ✓" : result.message;
+    log(result.ok ? "连接测试通过" : "连接测试失败: " + result.message, result.ok ? "done" : "error");
+  } catch (error) {
+    out.className = "error";
+    out.textContent = String(error);
+    log("连接测试失败: " + error, "error");
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function saveSettings({ quiet = true } = {}) {
@@ -237,35 +326,6 @@ async function saveSettings({ quiet = true } = {}) {
     flashSaved("保存失败");
     log("保存设置失败: " + error, "error");
     return false;
-  }
-}
-
-async function saveApiKey() {
-  const account = currentKeyAccount();
-  const secret = $("api-key").value.trim();
-  if (!account) return;
-  if (!secret) return;
-  try {
-    await call("set_api_key", { account, secret });
-    $("api-key").value = "";
-    updateSaveKeyButton();
-    flashSaved("密钥已保存");
-    await refreshKeyStatus();
-  } catch (error) {
-    log("保存密钥失败: " + error, "error");
-    flashSaved("密钥保存失败");
-  }
-}
-
-async function clearApiKey() {
-  const account = currentKeyAccount();
-  if (!account) return;
-  try {
-    await call("clear_api_key", { account });
-    flashSaved("密钥已清除");
-    await refreshKeyStatus();
-  } catch (error) {
-    log("清除失败: " + error, "error");
   }
 }
 
@@ -578,15 +638,34 @@ async function init() {
     syncProviderFields();
     saveSettings();
   });
-  // Selecting a URL in the key field is common for local endpoints with no key.
+  // Both credential rows share one implementation so they cannot drift apart.
+  refreshModelKeyStatus = wireCredential({
+    accountName: currentKeyAccount,
+    input: "api-key",
+    status: "key-status",
+    save: "save-key",
+    clear: "clear-key",
+    label: "模型密钥",
+  });
+  refreshMineruStatus = wireCredential({
+    accountName: MINERU_ACCOUNT,
+    input: "mineru-key",
+    status: "mineru-status",
+    save: "save-mineru",
+    clear: "clear-mineru",
+    label: "MinerU 密钥",
+  });
+
+  // The custom endpoint decides what is actually requested, so re-render on every edit.
   $("custom-key-env").addEventListener("change", () => {
-    updateSaveKeyButton();
     refreshKeyStatus();
+    refreshEffective();
     saveSettings();
   });
-  $("api-key").addEventListener("input", updateSaveKeyButton);
-  $("save-key").addEventListener("click", saveApiKey);
-  $("clear-key").addEventListener("click", clearApiKey);
+  for (const id of ["custom-base-url", "custom-model"]) {
+    $(id).addEventListener("change", refreshEffective);
+  }
+  $("test-connection").addEventListener("click", runConnectionTest);
   $("refresh-runs").addEventListener("click", refreshRuns);
 
   // `change` fires on blur/Enter, so text fields persist without a debounce timer.
@@ -617,6 +696,8 @@ async function init() {
     renderPaths(state.paths);
     applySettingsToForm(await call("load_settings"));
     await refreshKeyStatus();
+    await refreshMineruStatus();
+    await refreshEffective();
     refreshRuns();
   } catch (error) {
     log("初始化失败: " + error, "error");

@@ -205,6 +205,17 @@
             </div>
           </div>
 
+          <!-- Always show what will actually be requested, so a filled-in field can never
+               be silently ignored. -->
+          <div class="effective" id="effective">
+            <div class="effective-main">
+              <span class="muted">实际请求</span>
+              <code id="eff-endpoint">—</code>
+              <code id="eff-model">—</code>
+            </div>
+            <div id="eff-notes" class="warn" hidden></div>
+          </div>
+
           <div class="row api-key-row">
             <label class="grow">
               <span id="key-label">DeepSeek API Key</span>
@@ -228,6 +239,45 @@
             不写入任何配置文件；界面只能读到"是否存在"，无法读回明文。
           </p>
 
+          <div class="row">
+            <button id="test-connection">测试连接</button>
+            <span id="test-result" class="muted" role="status" aria-live="polite"></span>
+          </div>
+          <p class="muted note">
+            测试会用一个短句真实跑一遍翻译（约消耗几十 token），并单独使用临时目录，不影响你的翻译状态。
+          </p>
+        </div>
+
+        <div class="card">
+          <h2>PDF 输入所需（MinerU）</h2>
+          <div class="row api-key-row">
+            <label class="grow">
+              <span>MinerU API Key</span>
+              <input
+                type="password"
+                id="mineru-key"
+                placeholder="留空表示不修改已保存的密钥"
+                autocomplete="off"
+                spellcheck="false"
+                aria-describedby="mineru-hint"
+              />
+            </label>
+            <div class="key-actions">
+              <span id="mineru-status" class="badge unknown">检测中…</span>
+              <button id="save-mineru" class="primary" disabled>存入凭据库</button>
+              <button id="clear-mineru" class="ghost">清除</button>
+            </div>
+          </div>
+          <p id="mineru-hint" class="muted note">
+            只有 <strong>PDF</strong> 输入需要这个密钥。Wenyi 处理 PDF 时调用 MinerU（mineru.net）
+            做版面与文字提取，它<strong>独立于翻译模型</strong>，用自己的账号和密钥。
+            EPUB / TXT / Markdown / DOCX / SRT 都不需要它。
+            没有它时，选择 PDF 会立刻在"解析文档"阶段失败。
+          </p>
+        </div>
+
+        <div class="card">
+          <h2>网络</h2>
           <div class="row">
             <label class="grow"
               >HTTP 代理（可选，例如 http://127.0.0.1:10808）

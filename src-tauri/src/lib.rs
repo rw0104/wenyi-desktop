@@ -102,11 +102,222 @@ fn api_key_status(accounts: Vec<String>) -> std::collections::HashMap<String, bo
 
 // ── Resume ───────────────────────────────────────────────────────────────────────
 
+/// Credential name the engine reads for PDF conversion. Kept separate from the LLM
+/// provider keys because MinerU is not a translation provider: it is the external OCR and
+/// layout service the engine uses for PDF input, with its own account and its own key.
+pub const MINERU_KEY_ACCOUNT: &str = "MINERU_API_KEY";
+
+#[tauri::command]
+fn get_effective_config(settings: settings::Settings) -> settings::EffectiveConfig {
+    settings::describe(&settings)
+}
+
 #[tauri::command]
 fn list_runs(app: AppHandle) -> Result<Vec<runs::RunSummary>, String> {
     let workspace = settings::workspace_dir(&app)?;
     let config = settings::config_dir(&app)?;
     Ok(runs::list(&workspace, &config))
+}
+
+/// Build the environment the engine runs with: credentials and proxy, never on the
+/// command line (a process list would otherwise leak the key).
+///
+/// Shared by a real run and the connection test so both behave identically.
+fn engine_env(
+    user_settings: &settings::Settings,
+    ephemeral_api_key: Option<&str>,
+) -> Result<Vec<(String, String)>, String> {
+    let mut env: Vec<(String, String)> = Vec::new();
+
+    let key_env = user_settings.api_key_env();
+    if !key_env.is_empty() {
+        let ephemeral = ephemeral_api_key
+            .map(|k| k.trim().to_string())
+            .filter(|k| !k.is_empty());
+        let secret = match ephemeral {
+            Some(key) => Some(key),
+            None => secrets::get(&key_env),
+        };
+        match secret {
+            Some(key) => env.push((key_env.clone(), key)),
+            None if user_settings.requires_api_key() => {
+                return Err(format!(
+                    "{key_env} is not set. Enter an API key and save it, or use a local model."
+                ));
+            }
+            None => {}
+        }
+    }
+
+    let proxy = user_settings.proxy.trim().to_string();
+    if !proxy.is_empty() {
+        env.push(("HTTP_PROXY".into(), proxy.clone()));
+        env.push(("HTTPS_PROXY".into(), proxy.clone()));
+        env.push(("ALL_PROXY".into(), proxy));
+    }
+
+    // PDF input is converted by MinerU, which uses its own key. Without this the run dies
+    // at "Parsing document..." with a message naming an environment variable the user has
+    // no way to set, which reads as "the model key is broken".
+    if let Some(mineru_key) = secrets::get(MINERU_KEY_ACCOUNT) {
+        env.push((MINERU_KEY_ACCOUNT.into(), mineru_key));
+    }
+
+    Ok(env)
+}
+
+/// Outcome of a connection test, in language a user can act on.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TestResult {
+    ok: bool,
+    message: String,
+}
+
+/// Run one short paragraph through the real pipeline to prove the key and endpoint work.
+///
+/// Deliberately not a metadata ping: the engine needs a JSON-capable chat completion, so
+/// the only honest test is an actual translation. It uses a throwaway workspace, so the
+/// user's state directory is untouched, and it costs a handful of tokens.
+#[tauri::command]
+async fn test_connection(
+    app: AppHandle,
+    ephemeral_api_key: Option<String>,
+) -> Result<TestResult, String> {
+    let user_settings = settings::load(&app)?;
+    let env = engine_env(&user_settings, ephemeral_api_key.as_deref())?;
+
+    let dir = std::env::temp_dir().join("wenyi-connection-test");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+
+    let config_path = dir.join("config.yaml");
+    std::fs::write(&config_path, settings::render_config_yaml(&user_settings))
+        .map_err(|e| e.to_string())?;
+
+    let book_path = dir.join("connection-probe.txt");
+    std::fs::write(
+        &book_path,
+        "Chapter One\n\nThe harbour was quiet at dawn, and the boats did not move.\n",
+    )
+    .map_err(|e| e.to_string())?;
+
+    let args = build_engine_args(
+        "translate",
+        &book_path.to_string_lossy(),
+        &config_path.to_string_lossy(),
+        &["--no-polish".to_string(), "--no-review".to_string()],
+    );
+
+    let sidecar = app.shell().sidecar("wenyi-core").map_err(|e| e.to_string())?;
+    let (mut rx, child) = sidecar
+        .args(args)
+        .envs(env)
+        .current_dir(&dir)
+        .spawn()
+        .map_err(|e| format!("Could not start the translation engine: {e}"))?;
+
+    let mut result = TestResult {
+        ok: false,
+        message: "The engine stopped without reporting a result.".into(),
+    };
+    let mut finished = false;
+
+    while let Some(event) = rx.recv().await {
+        match event {
+            CommandEvent::Stdout(bytes) => {
+                let text = String::from_utf8_lossy(&bytes);
+                for raw in text.lines() {
+                    let trimmed = raw.trim();
+                    if trimmed.is_empty() {
+                        continue;
+                    }
+                    let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) else {
+                        continue;
+                    };
+                    match value.get("event").and_then(|v| v.as_str()) {
+                        Some("done") => {
+                            result = TestResult {
+                                ok: true,
+                                message: "Connected: the model answered and JSON was parsed."
+                                    .into(),
+                            };
+                            finished = true;
+                        }
+                        Some("error") => {
+                            let detail = value
+                                .get("message")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or("unknown error");
+                            result = TestResult {
+                                ok: false,
+                                message: explain_engine_error(detail),
+                            };
+                            finished = true;
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            CommandEvent::Stderr(bytes) => {
+                // Keep the last meaningful stderr line: it carries errors that never
+                // reached the event stream (for example a startup failure).
+                let text = String::from_utf8_lossy(&bytes);
+                for raw in text.lines() {
+                    if let Some(rest) = raw.trim().strip_prefix("Error: ") {
+                        if !finished {
+                            result.message = explain_engine_error(rest);
+                        }
+                    }
+                }
+            }
+            CommandEvent::Terminated(_) => break,
+            _ => {}
+        }
+        if finished {
+            let _ = child.kill();
+            break;
+        }
+    }
+
+    Ok(result)
+}
+
+/// Turn an engine error into something the user can act on.
+///
+/// The raw text is written for a developer reading a terminal; several of these name an
+/// environment variable the desktop shell owns, which is exactly the case where the
+/// message must point at a control in the app instead.
+fn explain_engine_error(detail: &str) -> String {
+    let lower = detail.to_lowercase();
+    if lower.contains("mineru_api_key") || lower.contains("api token not provided") {
+        return format!(
+            "PDF input needs a MinerU key, which is separate from the translation model \
+             key. Add it under Settings. (engine: {detail})"
+        );
+    }
+    if lower.contains("401") || lower.contains("authentication") || lower.contains("invalid api key")
+    {
+        return format!(
+            "The endpoint rejected the API key. Check that the key belongs to the \
+             endpoint shown above. (engine: {detail})"
+        );
+    }
+    if lower.contains("model not exist") || lower.contains("model_not_found") {
+        return format!(
+            "The endpoint does not recognise the configured model id. (engine: {detail})"
+        );
+    }
+    if lower.contains("connection") || lower.contains("timeout") || lower.contains("dns") {
+        return format!(
+            "Could not reach the endpoint. If your network needs a proxy, set it under \
+             Settings. (engine: {detail})"
+        );
+    }
+    if lower.contains("no module named") {
+        return format!("The bundled engine is incomplete: {detail}");
+    }
+    detail.to_string()
 }
 
 // ── Native dialogs and shell integration ─────────────────────────────────────────
@@ -221,36 +432,7 @@ async fn run_engine(
         &request.flags,
     );
 
-    // Credentials: a one-off typed key wins, otherwise the OS credential store.
-    let mut env: Vec<(String, String)> = Vec::new();
-    let key_env = user_settings.api_key_env();
-    if !key_env.is_empty() {
-        let ephemeral = request
-            .ephemeral_api_key
-            .as_ref()
-            .map(|k| k.trim().to_string())
-            .filter(|k| !k.is_empty());
-        let secret = match ephemeral {
-            Some(key) => Some(key),
-            None => secrets::get(&key_env),
-        };
-        match secret {
-            Some(key) => env.push((key_env.clone(), key)),
-            None if user_settings.requires_api_key() => {
-                return Err(format!(
-                    "{key_env} is not set. Enter an API key and save it, or use a local model."
-                ));
-            }
-            None => {}
-        }
-    }
-
-    let proxy = user_settings.proxy.trim().to_string();
-    if !proxy.is_empty() {
-        env.push(("HTTP_PROXY".into(), proxy.clone()));
-        env.push(("HTTPS_PROXY".into(), proxy.clone()));
-        env.push(("ALL_PROXY".into(), proxy));
-    }
+    let env = engine_env(&user_settings, request.ephemeral_api_key.as_deref())?;
 
     let sidecar = app.shell().sidecar("wenyi-core").map_err(|e| e.to_string())?;
     let (mut rx, child) = sidecar
@@ -358,6 +540,7 @@ pub fn run() {
             get_paths,
             load_settings,
             save_settings,
+            get_effective_config,
             set_api_key,
             clear_api_key,
             api_key_status,
@@ -365,6 +548,7 @@ pub fn run() {
             pick_input_file,
             open_path,
             run_engine,
+            test_connection,
             cancel,
         ])
         .run(tauri::generate_context!())
