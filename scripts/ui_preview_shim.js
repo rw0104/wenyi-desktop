@@ -233,20 +233,21 @@
       "C:\\Users\\you\\Downloads\\TheEconomist.2026.09.12.epub";
     document.getElementById("open-input-dir").disabled = false;
 
-    // Open on Settings so the resolved request target and the ignored-field warning are
-    // the visible subject of the preview.
+    // Which screen the preview shows is chosen by the URL hash, so one staged page can be
+    // captured as the shelf and as the settings screen without duplicating the markup.
+    const wanted = (location.hash || "#translate").slice(1);
     const active = document.querySelector(".tab.active");
     if (active) {
       active.classList.remove("active");
       active.setAttribute("aria-selected", "false");
     }
-    const settingsTab = document.querySelector('[data-tab="settings"]');
-    if (settingsTab) {
-      settingsTab.classList.add("active");
-      settingsTab.setAttribute("aria-selected", "true");
+    const chosenTab = document.querySelector(`[data-tab="${wanted}"]`);
+    if (chosenTab) {
+      chosenTab.classList.add("active");
+      chosenTab.setAttribute("aria-selected", "true");
     }
     for (const panel of document.querySelectorAll(".panel")) {
-      panel.classList.toggle("active", panel.id === "panel-settings");
+      panel.classList.toggle("active", panel.id === `panel-${wanted}`);
     }
 
     emit({ event: "started", input: "D:\\Books\\Kokoro.epub", command: "translate" });

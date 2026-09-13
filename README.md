@@ -99,10 +99,10 @@ python .\scripts\make_test_book.py .          # 生成 wenyi-test-book.epub / .t
 
 ![成品应用窗口](docs/images/ui-app-window.png)
 
-浏览器内渲染的双主题：
-
-![深色](docs/images/ui-dark.png)
-![浅色](docs/images/ui-light.png)
+其余界面截图已撤下。生成器 `scripts/preview_ui.ps1` 此前存在两个缺陷——它用
+系统 ANSI 代码页读取 UTF-8 源文件，并且复用浏览器配置目录，导致截图取自被缓存
+的旧渲染。两个缺陷都已修复，且脚本现在会读回自己产出的图片做校验，但在有人
+亲眼确认之前，不再发布无法自动验证的截图。
 
 界面对照 Apple 的流体界面与设计基础原则实现，要点：
 

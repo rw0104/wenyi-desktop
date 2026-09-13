@@ -82,28 +82,80 @@ Write-Host "staged page verified: $($samples.Count) text samples intact"
 $page = "file:///" + ((Join-Path $Stage "index.html") -replace '\\', '/')
 
 function Invoke-Shot {
-    param([string]$Name, [string[]]$ExtraArgs, [string]$Profile)
+    param([string]$Name, [string[]]$ExtraArgs, [string]$Tab = "translate")
     $shot = Join-Path $OutDir "$Name.png"
     Remove-Item $shot -Force -ErrorAction SilentlyContinue
+
+    # A fresh profile per shot, deleted first. Chromium caches by URL, and the staged page
+    # keeps the same file:// URL between runs only by accident of naming -- when it did, every
+    # screenshot after the first silently returned the first cached render, so the tool
+    # documented a stale page while the source on disk was correct.
+    $profile = Join-Path $env:TEMP "wenyi-shot-$Name-$Nonce"
+    Remove-Item -Recurse -Force $profile -ErrorAction SilentlyContinue
+
     $args = @(
         "--headless=new",
         "--disable-gpu",
         "--hide-scrollbars",
         "--no-first-run",
         "--no-default-browser-check",
-        "--user-data-dir=$Profile",
+        "--user-data-dir=$profile",
+        "--disk-cache-size=1",
         "--window-size=$Width,$Height",
         "--virtual-time-budget=2500",
         "--screenshot=$shot"
-    ) + $ExtraArgs + @($page)
+    ) + $ExtraArgs + @("$page#$Tab")
     # Chromium logs warnings to stderr; Windows PowerShell 5.1 turns native stderr into a
     # terminating error under ErrorActionPreference=Stop, so relax it locally.
     $previous = $ErrorActionPreference
     $ErrorActionPreference = "Continue"
     & $Browser @args 2>&1 | Out-Null
     $ErrorActionPreference = $previous
+    Remove-Item -Recurse -Force $profile -ErrorAction SilentlyContinue
     if (-not (Test-Path $shot)) { throw "Screenshot failed: $Name" }
     return $shot
+}
+
+# Verify a produced image by reading its text back. Catches what inspecting the source
+# cannot: a cached or stale render, a missing font, a page that never executed.
+#
+# Two kinds of evidence, because OCR is not a faithful transcriber:
+#   - ASCII markers must appear verbatim; OCR reads Latin text reliably
+#   - text samples are compared with whitespace removed, since the engine separates CJK
+#     glyphs, and only a majority is required because single glyphs are sometimes misread
+function Assert-ShotText {
+    param([string]$Shot, [string[]]$Samples, [string[]]$AsciiMarkers, [string]$Label)
+    $ocr = Join-Path $PSScriptRoot "ocr_text.ps1"
+    if (-not (Test-Path $ocr)) { Write-Warning "ocr_text.ps1 missing; skipping image check"; return }
+    $previous = $ErrorActionPreference
+    $ErrorActionPreference = "Continue"
+    $raw = & $ocr -Path $Shot 2>&1 | Out-String
+    $ErrorActionPreference = $previous
+
+    $flat = ($raw -replace '\s', '')
+    $missing = @($AsciiMarkers | Where-Object { -not $flat.Contains($_) })
+    if ($missing.Count -gt 0) {
+        throw "$Label image is missing markers: $($missing -join ', '). The render is stale or broken."
+    }
+
+    # Compare by character overlap rather than exact containment. OCR misreads individual
+    # glyphs and the engine separates CJK characters, so exact matching is brittle; but text
+    # turned to mojibake shares almost no characters with the source, while a merely
+    # imperfect reading shares most of them.
+    $best = 0.0
+    foreach ($sample in $Samples) {
+        $chars = @($sample.ToCharArray() | Where-Object { [int]$_ -gt 127 })
+        if ($chars.Count -eq 0) { continue }
+        $present = @($chars | Where-Object { $flat.Contains($_) }).Count
+        $ratio = $present / $chars.Count
+        if ($ratio -gt $best) { $best = $ratio }
+    }
+    if ($best -lt 0.6) {
+        throw ("$Label image shares only {0:P0} of its characters with the source text. " -f $best) +
+            "The render is stale or broken."
+    }
+    Write-Host ("{0}: {1} markers + {2:P0} character overlap" -f `
+        $Label, $AsciiMarkers.Count, $best)
 }
 
 Write-Host "browser : $Browser"
@@ -111,14 +163,20 @@ Write-Host "page    : $page"
 Write-Host "out     : $OutDir"
 Write-Host ""
 
-$light = Invoke-Shot -Name "wenyi-light" -ExtraArgs @() `
-    -Profile (Join-Path $env:TEMP "wenyi-shot-light")
-$dark = Invoke-Shot -Name "wenyi-dark" -ExtraArgs @("--force-dark-mode") `
-    -Profile (Join-Path $env:TEMP "wenyi-shot-dark")
+$light = Invoke-Shot -Name "wenyi-light" -Tab "translate"
+$dark = Invoke-Shot -Name "wenyi-dark" -Tab "translate" -ExtraArgs @("--force-dark-mode")
+$settings = Invoke-Shot -Name "wenyi-settings" -Tab "settings"
+
+# Read the images back so a stale or broken render cannot be published silently. The ASCII
+# markers identify current content: a cached older render would not contain them.
+Assert-ShotText -Shot $light -Label "shelf (light)" -Samples $samples `
+    -AsciiMarkers @("TheEconomist", "MiddleEast")
+Assert-ShotText -Shot $settings -Label "settings" -Samples $samples `
+    -AsciiMarkers @("tokenrhythm", "deepseek-v4-pro-0813")
 
 # Report the sampled background pixel so the colour scheme is verifiable, not assumed.
 Add-Type -AssemblyName System.Drawing
-foreach ($shot in @($light, $dark)) {
+foreach ($shot in @($light, $dark, $settings)) {
     $bmp = New-Object System.Drawing.Bitmap($shot)
     $pixel = $bmp.GetPixel(8, $Height - 8)  # bottom-left empty area = page background
     $bmp.Dispose()
