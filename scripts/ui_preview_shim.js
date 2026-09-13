@@ -264,6 +264,67 @@
 
     emit({ event: "progress", done: 653, total: 1313, label: "Middle East & Africa" });
     emit({ event: "usage", usage: { totals: { total_tokens: 486213 } } });
-    await sleep(40);
+    await sleep(60);
+
+    // Layout probe. A screenshot shows whether the layout looks right at one size; this
+    // records whether it actually fits, which is what the preview cannot judge by eye.
+    // Written into the DOM so `--dump-dom` can report it back.
+    const doc = document.documentElement;
+    const overflow = doc.scrollWidth - doc.clientWidth;
+    const wide = [];
+    const past = new Set();
+    for (const el of document.querySelectorAll("body *")) {
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.right > doc.clientWidth + 1) {
+        past.add(el);
+        wide.push(`${el.tagName.toLowerCase()}.${(el.className || "").toString().split(" ")[0]}`);
+      }
+    }
+    // An ancestor is past the edge only because a descendant is; reporting the ancestors
+    // alone names the symptom. Keep the deepest elements - the ones whose own content is
+    // wider than the box they were given - with the values that explain why.
+    const leaves = [];
+    for (const el of past) {
+      let hasChildPast = false;
+      for (const child of el.children) {
+        if (past.has(child)) { hasChildPast = true; break; }
+      }
+      if (hasChildPast) continue;
+      const cs = getComputedStyle(el);
+      leaves.push({
+        el: `${el.tagName.toLowerCase()}.${(el.className || "").toString().split(" ").slice(0, 2).join(".")}`,
+        over: Math.round(el.getBoundingClientRect().right - doc.clientWidth),
+        scroll: el.scrollWidth,
+        client: el.clientWidth,
+        minWidth: cs.minWidth,
+        whiteSpace: cs.whiteSpace,
+        flex: cs.flex,
+        text: (el.textContent || "").trim().replace(/\s+/g, " ").slice(0, 48),
+      });
+    }
+    // Also record values the breakpoints are supposed to change, so a check can tell an
+    // adaptation that works from a media query that never matches.
+    const chrome = document.querySelector(".chrome");
+    const cover = document.querySelector(".book-cover");
+    const shelf = document.querySelector(".shelf");
+    const main = document.querySelector("main");
+    const visible = (el) => !!el && el.getBoundingClientRect().width > 0;
+    const probe = document.createElement("div");
+    probe.id = "layout-probe";
+    probe.textContent = JSON.stringify({
+      viewport: `${doc.clientWidth}x${doc.clientHeight}`,
+      rootFontSize: Math.round(parseFloat(getComputedStyle(doc).fontSize) * 10) / 10,
+      overflowPx: overflow,
+      clippedCount: wide.length,
+      clipped: wide.slice(0, 6),
+      overflowSources: leaves.slice(0, 6),
+      chromeDirection: chrome ? getComputedStyle(chrome).flexDirection : null,
+      // The shelf only exists on one panel. Reporting its box while that panel is hidden
+      // would print a number that looks like a measurement but is not one.
+      coverWidth: visible(cover) ? Math.round(cover.getBoundingClientRect().width) : null,
+      mainPadding: main ? Math.round(parseFloat(getComputedStyle(main).paddingLeft)) : null,
+      shelfColumns: visible(shelf) ? getComputedStyle(shelf).gridTemplateColumns.split(" ").length : null,
+    });
+    document.body.append(probe);
   });
 })();

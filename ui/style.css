@@ -281,6 +281,11 @@ main {
 
 .panel {
   display: none;
+  /* A grid item is floored at its own min-content by default. One unbreakable line inside
+   * - a file path, which stays on one line so it can ellipsize - would then set the width
+   * of the whole column and push the layout past the window edge. Raising the text size is
+   * enough to trigger it (§5, §15). */
+  min-width: 0;
 }
 .panel.active {
   display: grid;
@@ -309,6 +314,7 @@ main {
   border-radius: var(--radius);
   padding: 1.125rem 1.25rem;
   box-shadow: var(--shadow-card);
+  min-width: 0;
 }
 .card h2 {
   margin: 0 0 0.75rem;
@@ -486,6 +492,7 @@ button.danger:hover:not(:disabled) {
 
 .file-row {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
   gap: 0.75rem;
@@ -987,6 +994,118 @@ dl.kv dd {
   white-space: nowrap;
   font-family: "Cascadia Mono", Consolas, monospace;
   color: var(--text-mono);
+}
+
+/* ── Window size adaptation ──────────────────────────────────────────────────
+ * The window is resizable from 760x560 upward, so the layout has to hold at both ends
+ * instead of assuming the 1080x720 default. Breakpoints are in rem, so they move with the
+ * user's text size -- the same reason spacing is in rem. */
+
+/* Narrow: the brand and the tab strip stop fitting on one line, and two-column rows begin
+ * to squeeze. */
+@media (max-width: 60rem) {
+  .chrome {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.25rem;
+    padding: 0.875rem 1rem 0.375rem;
+  }
+  .brand h1 {
+    font-size: 1.375rem;
+  }
+  .tagline {
+    margin: 0.0625rem 0 0.375rem;
+  }
+  .header-right {
+    justify-content: space-between;
+    padding-bottom: 0.375rem;
+  }
+  main {
+    padding: 1rem 1rem 2rem;
+  }
+  .card {
+    padding: 1rem;
+  }
+  /* A cover and its metadata side by side stop fitting; stack them. */
+  .shelf.single .book {
+    flex-direction: column;
+  }
+  .shelf.single .book-cover {
+    width: 9rem;
+  }
+  .shelf.single .book-title {
+    font-size: 0.9375rem;
+  }
+  .run-row {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.5rem;
+  }
+  .run-actions {
+    justify-content: flex-end;
+  }
+}
+
+/* At the window's minimum width, give each control its own row and shrink the shelf. */
+@media (max-width: 50rem) {
+  .row {
+    gap: 0.625rem;
+  }
+  label.grow {
+    flex-basis: 100%;
+  }
+  .key-actions {
+    width: 100%;
+    justify-content: flex-end;
+  }
+  .shelf {
+    grid-template-columns: repeat(auto-fill, minmax(6rem, 1fr));
+    gap: 1rem 0.75rem;
+  }
+  .shelf.single .book-cover {
+    width: 8rem;
+  }
+  .drop-zone {
+    padding: 1.25rem 0.75rem;
+  }
+  .tabs {
+    gap: 0;
+  }
+  .tab {
+    padding: 0.5rem 0.625rem;
+  }
+}
+
+/* Short windows: an unbounded log would push the controls out of reach. */
+@media (max-height: 40rem) {
+  main {
+    gap: 0.75rem;
+    padding-top: 0.75rem;
+  }
+  .card {
+    padding: 0.875rem 1rem;
+  }
+  .log {
+    min-height: 4.5rem;
+    max-height: 9rem;
+  }
+  .drop-zone {
+    padding: 1rem;
+  }
+}
+
+/* Wide windows: spend the room on the shelf rather than leaving a narrow column. */
+@media (min-width: 90rem) {
+  main {
+    max-width: 84rem;
+  }
+  .shelf {
+    grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
+    gap: 1.5rem 1.25rem;
+  }
+  .shelf.single .book-cover {
+    width: 13rem;
+  }
 }
 
 /* ── Accessibility preferences (§14) ───────────────────────────────────────── */
