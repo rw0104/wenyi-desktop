@@ -128,6 +128,32 @@
 
         <div class="card">
           <h2>3 · 运行</h2>
+          <!-- Where the finished book lands. The engine defaults to an `output` folder beside
+               the source, which for a book sitting in Downloads is somewhere the user never
+               chose; this is the control that answers "where did my book go". -->
+          <div class="row output-row">
+            <label class="grow">
+              输出位置
+              <span class="output-target">
+                <input type="text" id="output-dir" placeholder="留空则输出到源文件旁的 output 文件夹" spellcheck="false" />
+                <button id="pick-output-dir" class="ghost small">选择文件夹</button>
+                <button id="open-selected-dir" class="ghost small" disabled>打开</button>
+              </span>
+            </label>
+            <label>
+              输出格式
+              <select id="output-format">
+                <option value="">跟随源文件（EPUB / DOCX）</option>
+                <option value="epub">EPUB</option>
+                <option value="txt">纯文本 TXT</option>
+                <option value="docx">Word DOCX</option>
+                <option value="markdown">Markdown</option>
+                <option value="html">HTML</option>
+                <option value="pdf">PDF</option>
+              </select>
+            </label>
+          </div>
+          <p class="muted output-preview" id="output-preview"></p>
           <div class="row">
             <button id="run" class="primary">开始 / 继续翻译</button>
             <button id="prepare">仅准备（预扫）</button>
@@ -342,6 +368,17 @@
     <!-- Announcements are throttled to meaningful moments only, so assistive tech is
          not flooded by per-batch progress ticks. -->
     <div id="announcer" class="sr-only" role="status" aria-live="polite"></div>
+
+    <!-- Drop affordance for a shelf that already has books.
+         The dashed drop zone only exists in the empty state, so once a book was added a held
+         file produced no feedback anywhere on screen even though dropping still worked. This
+         is the same affordance moved to the window, shown only when the zone is not. -->
+    <div id="drop-overlay" class="drop-overlay" hidden>
+      <div class="drop-overlay-frame">
+        <span class="drop-icon" aria-hidden="true">＋</span>
+        <span id="drop-overlay-text" class="drop-title">松开以把书籍加入书架</span>
+      </div>
+    </div>
 
     <script src="shelf.js"></script>
     <script src="main.js"></script>

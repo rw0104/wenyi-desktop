@@ -1,6 +1,6 @@
 {
   "name": "wenyi-desktop",
-  "version": "0.5.5",
+  "version": "0.5.6",
   "private": true,
   "description": "Desktop shell for the Wenyi translation engine",
   "scripts": {

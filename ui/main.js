@@ -188,7 +188,10 @@ function applySettingsToForm(s) {
   $("review").checked = s.review;
   $("book-understanding").checked = s.bookUnderstanding;
   $("bilingual").checked = s.bilingual;
+  $("output-dir").value = s.outputDir || "";
+  $("output-format").value = s.outputFormat || "";
   syncProviderFields();
+  renderOutputPreview();
 }
 
 function readSettingsFromForm() {
@@ -209,7 +212,52 @@ function readSettingsFromForm() {
     bilingual: $("bilingual").checked,
     // The engine always writes a monolingual edition; the checkbox only adds one.
     mono: true,
+    outputDir: $("output-dir").value.trim(),
+    outputFormat: $("output-format").value,
   };
+}
+
+/** The extension the engine will append, mirroring settings::default_output_name. */
+function outputExtension(input, format) {
+  const ext = (input || "").split(".").pop().toLowerCase();
+  if (ext === "srt") return "srt";
+  if (format) return { markdown: "md" }[format] || format;
+  return ext === "docx" ? "docx" : "epub";
+}
+
+function outputStem(input) {
+  const base = baseName(input || "");
+  const dot = base.lastIndexOf(".");
+  return dot > 0 ? base.slice(0, dot) : base;
+}
+
+/**
+ * Say exactly where the finished book will land, before the run starts.
+ *
+ * The engine's own default is an `output` folder beside the source, which is invisible from
+ * here; naming the file is what turns "it finished" into "it finished and I know where it is".
+ */
+function renderOutputPreview() {
+  const el = $("output-preview");
+  if (!el) return;
+  const input = state.input || "";
+  const dir = $("output-dir").value.trim();
+  const format = $("output-format").value;
+  $("open-selected-dir").disabled = !dir;
+
+  // Subtitles ignore --format entirely, so do not offer a choice that will not be honoured.
+  const isSrt = (input || "").toLowerCase().endsWith(".srt");
+  $("output-format").disabled = isSrt;
+
+  if (!input) {
+    el.textContent = dir ? `成品将输出到 ${dir}` : "";
+    return;
+  }
+  const lang = $("target-lang").value || "zh";
+  const name = `${outputStem(input)}.${lang}.${outputExtension(input, format)}`;
+  el.textContent = dir
+    ? `成品将输出到 ${dir}\\${name}`
+    : `成品将输出到源文件旁的 output 文件夹：${name}`;
 }
 
 const MINERU_ACCOUNT = "MINERU_API_KEY";
@@ -326,6 +374,7 @@ window.__onBookSelected = (input) => {
   label.title = input;
   $("open-input-dir").disabled = false;
   updateProgressDetail();
+  renderOutputPreview();
 };
 
 // Log milestones. The log is how a user tells a long run is alive, so routine progress must
@@ -493,6 +542,16 @@ async function saveSettings({ quiet = true } = {}) {
   }
 }
 
+/** Commit the output destination the moment it is chosen.
+ *
+ *  Picking a folder is a decision, not a draft: leaving it unsaved until the user happens to
+ *  press Save elsewhere means the preview promises one folder and the run writes to another.
+ */
+async function persistOutputChoice() {
+  await saveSettings();
+  renderOutputPreview();
+}
+
 function renderPaths(paths) {
   const rows = [
     ["数据目录", paths.configDir],
@@ -658,7 +717,7 @@ async function refreshRuns() {
         const ratio =
           run.chaptersTotal > 0 ? Math.min(1, run.chaptersDone / run.chaptersTotal) : 0;
         const progress = run.hasState
-          ? `${run.chaptersDone}/${run.chaptersTotal} 章`
+          ? `已完成 ${run.chaptersDone}/${run.chaptersTotal} 章`
           : "尚无状态";
         const title = run.title || baseName(run.input);
         const missing = run.inputExists ? "" : ' <span class="badge missing">文件缺失</span>';
@@ -834,6 +893,32 @@ async function init() {
       log("打开失败: " + error, "error");
     }
   });
+
+  // Output destination. The folder is committed on pick rather than on save, so the preview
+  // line and the run that follows cannot disagree about where the book is going.
+  $("pick-output-dir").addEventListener("click", async () => {
+    try {
+      const picked = await call("pick_output_dir", { current: $("output-dir").value.trim() });
+      if (!picked) return;
+      $("output-dir").value = picked;
+      await persistOutputChoice();
+    } catch (error) {
+      log("选择文件夹失败: " + error, "error");
+    }
+  });
+  $("output-dir").addEventListener("input", renderOutputPreview);
+  $("output-dir").addEventListener("change", persistOutputChoice);
+  $("output-format").addEventListener("change", persistOutputChoice);
+  $("target-lang").addEventListener("change", renderOutputPreview);
+  $("open-selected-dir").addEventListener("click", async () => {
+    const dir = $("output-dir").value.trim();
+    if (!dir) return;
+    try {
+      await call("open_path", { path: dir });
+    } catch (error) {
+      log("打开失败: " + error, "error");
+    }
+  });
   $("open-workspace").addEventListener("click", async () => {
     if (!state.paths) return;
     try {
@@ -886,15 +971,29 @@ async function init() {
   if (listen) {
     listen("engine-event", (event) => handleEvent(event.payload));
 
-    // Native drag-and-drop: the drop zone hover state tracks enter/over/leave so the
-    // target reacts continuously while the file is held over it.
+    // Native drag-and-drop. Exactly one target is highlighted at a time: the dashed zone when
+    // it is on screen, otherwise a window-level overlay. Before this, adding a first book hid
+    // the zone, and a held file got no feedback anywhere even though dropping still worked.
     listen("drag-state", (event) => {
-      dropZone.classList.toggle("active", Boolean(event.payload?.active));
+      const dragging = Boolean(event.payload?.active);
+      const zoneVisible = !$("shelf-empty").hidden;
+      const running = state.running;
+      dropZone.classList.toggle("active", dragging && !running && zoneVisible);
+      const overlay = $("drop-overlay");
+      const showOverlay = dragging && (running || !zoneVisible);
+      overlay.hidden = !showOverlay;
+      overlay.classList.toggle("blocked", running);
+      if (showOverlay) {
+        $("drop-overlay-text").textContent = running
+          ? "翻译进行中，暂时不能添加书籍。请先点「取消」。"
+          : "松开以把书籍加入书架";
+      }
     });
     listen("file-dropped", (event) => {
       const path = event.payload?.path;
       if (!path) return;
       dropZone.classList.remove("active");
+      $("drop-overlay").hidden = true;
       if (state.running) {
         log("翻译进行中，暂时不能添加书籍。请先点「取消」。", "error");
         return;

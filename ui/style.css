@@ -656,6 +656,77 @@ button.danger:hover:not(:disabled) {
   display: none;
 }
 
+/* ── Output destination ──────────────────────────────────────────────────────
+ * A folder field and its two buttons read as one control, so they sit on one line and the
+ * text input takes the slack. The preview line underneath states the resolved file name,
+ * which is the part a user actually needs to know before starting a multi-hour run. */
+.output-target {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  min-width: 0;
+}
+.output-target input[type="text"] {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.output-target button {
+  flex: 0 0 auto;
+}
+.output-preview {
+  margin: 0.5rem 0 0.75rem;
+  font-size: 0.75rem;
+  line-height: 1.5;
+  word-break: break-all;
+}
+.output-preview:empty {
+  display: none;
+}
+
+/* ── Window-level drop affordance ────────────────────────────────────────────
+ * Shown only while a file is held over the window and the dashed zone is not on screen, so
+ * exactly one drop target is ever highlighted (§12: never stack a light translucent surface
+ * on another). Feedback is continuous for as long as the file is held (§1), including the
+ * case where dropping is refused because a run is in flight. */
+.drop-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  background: var(--chrome-fade);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  pointer-events: none;
+}
+.drop-overlay[hidden] {
+  display: none;
+}
+.drop-overlay-frame {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 2rem 3rem;
+  border: 2px dashed var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel-solid);
+  box-shadow: var(--shadow-card);
+}
+.drop-overlay.blocked .drop-overlay-frame {
+  border-color: var(--danger, #c0392b);
+}
+.drop-overlay.blocked .drop-overlay-frame .drop-icon {
+  color: var(--danger, #c0392b);
+}
+@media (prefers-reduced-transparency: reduce) {
+  .drop-overlay {
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+    background: var(--chrome-solid);
+  }
+}
+
 /* ── Log (structured, so each line can carry its own weight) ──────────────── */
 .log {
   background: var(--log-bg);

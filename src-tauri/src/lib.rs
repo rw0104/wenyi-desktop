@@ -412,6 +412,32 @@ async fn pick_input_files(app: AppHandle) -> Result<Vec<String>, String> {
         .collect())
 }
 
+/// Open the native picker for the folder finished books are written to.
+#[tauri::command]
+async fn pick_output_dir(app: AppHandle, current: Option<String>) -> Result<Option<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<FilePath>>();
+    let mut dialog = app
+        .dialog()
+        .file()
+        .set_title("选择成品输出文件夹");
+    if let Some(dir) = current.as_deref().map(str::trim).filter(|d| !d.is_empty()) {
+        if PathBuf::from(dir).is_dir() {
+            dialog = dialog.set_directory(dir);
+        }
+    }
+    dialog.pick_folder(move |path| {
+        let _ = tx.send(path);
+    });
+
+    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(picked
+        .and_then(|path| path.into_path().ok())
+        .map(|path| path.to_string_lossy().into_owned()))
+}
+
 #[tauri::command]
 fn list_runs(app: AppHandle) -> Result<Vec<runs::RunSummary>, String> {
     let workspace = settings::workspace_dir(&app)?;
@@ -880,11 +906,33 @@ async fn run_engine(
     let workspace = settings::workspace_dir(&app)?;
     let config_path = settings::config_file(&app)?;
 
+    // Output destination. The engine's `--out` is a full file path, not a folder, so the shell
+    // composes it from the chosen folder plus the name the engine would have used anyway.
+    // Passing neither leaves the engine's default: a folder named `output` beside the source.
+    let mut flags = request.flags.clone();
+    if matches!(request.command.as_str(), "translate" | "assemble") {
+        let is_srt = PathBuf::from(&input)
+            .extension()
+            .map(|e| e.eq_ignore_ascii_case("srt"))
+            .unwrap_or(false);
+        if !is_srt {
+            let format = settings::normalize_output_format(&user_settings.output_format)?;
+            if !format.is_empty() {
+                flags.push("--format".into());
+                flags.push(format);
+            }
+        }
+        if let Some(out) = settings::output_path_for(&user_settings, &input) {
+            flags.push("--out".into());
+            flags.push(out);
+        }
+    }
+
     let args = build_engine_args(
         &request.command,
         &input,
         &config_path.to_string_lossy(),
-        &request.flags,
+        &flags,
     );
 
     let env = engine_env(&user_settings, request.ephemeral_api_key.as_deref())?;
@@ -1007,6 +1055,7 @@ pub fn run() {
             api_key_status,
             list_runs,
             pick_input_file,
+            pick_output_dir,
             open_path,
             run_engine,
             test_connection,

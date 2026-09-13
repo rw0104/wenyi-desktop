@@ -55,6 +55,101 @@ pub struct Settings {
     pub bilingual: bool,
     pub mono: bool,
     pub book_understanding: bool,
+    /// Where finished books are written. Empty keeps the engine's default, a folder named
+    /// `output` beside the source file - which for a book downloaded to the Downloads folder
+    /// means the result lands somewhere the user never chose and may not think to look.
+    pub output_dir: String,
+    /// `epub` | `txt` | `html` | `markdown` | `pdf` | `docx`, or empty to let the engine pick
+    /// (docx for .docx input, epub otherwise).
+    pub output_format: String,
+}
+
+/// The formats the engine's `--format` accepts, as (value, extension).
+pub const OUTPUT_FORMATS: [(&str, &str); 6] = [
+    ("epub", "epub"),
+    ("txt", "txt"),
+    ("html", "html"),
+    ("markdown", "md"),
+    ("pdf", "pdf"),
+    ("docx", "docx"),
+];
+
+/// Normalise a requested format, rejecting anything the engine would refuse at startup.
+pub fn normalize_output_format(raw: &str) -> Result<String, String> {
+    let value = raw.trim().to_ascii_lowercase();
+    if value.is_empty() {
+        return Ok(String::new());
+    }
+    if OUTPUT_FORMATS.iter().any(|(name, _)| *name == value) {
+        Ok(value)
+    } else {
+        Err(format!(
+            "不支持的输出格式：{raw}（可选 epub / txt / html / markdown / pdf / docx）"
+        ))
+    }
+}
+
+/// The extension the engine appends for a format; empty format means the engine decides.
+pub fn extension_for(raw: &str) -> &'static str {
+    let value = raw.trim().to_ascii_lowercase();
+    OUTPUT_FORMATS
+        .iter()
+        .find(|(name, _)| *name == value)
+        .map(|(_, ext)| *ext)
+        .unwrap_or("")
+}
+
+/// The file name the engine produces for this input, without the directory.
+///
+/// Mirrors `trans_novel.assemble.writer_common._default_out`: source stem, target language,
+/// and `-bi` for the bilingual copy. The shell has to reproduce this because the engine's
+/// `--out` takes a full file path rather than a folder. A test pins the shape.
+pub fn default_output_name(
+    input: &str,
+    target_lang: &str,
+    format: &str,
+    bilingual: bool,
+) -> String {
+    let stem = std::path::Path::new(input)
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let lang = if target_lang.trim().is_empty() {
+        "zh"
+    } else {
+        target_lang.trim()
+    };
+    let known = extension_for(format);
+    let input_ext = std::path::Path::new(input)
+        .extension()
+        .map(|e| e.to_string_lossy().to_ascii_lowercase())
+        .unwrap_or_default();
+    // Subtitles are always written as .srt; the engine rejects --format for them outright.
+    let ext = if input_ext == "srt" {
+        "srt"
+    } else if !known.is_empty() {
+        known
+    } else if input_ext == "docx" {
+        "docx"
+    } else {
+        "epub"
+    };
+    format!("{stem}.{lang}{}.{ext}", if bilingual { "-bi" } else { "" })
+}
+
+/// The full monolingual output path for a run, or `None` when the user kept the default.
+pub fn output_path_for(settings: &Settings, input: &str) -> Option<String> {
+    let dir = settings.output_dir.trim();
+    if dir.is_empty() {
+        return None;
+    }
+    let name = default_output_name(input, &settings.target_lang, &settings.output_format, false);
+    Some(
+        std::path::Path::new(dir)
+            .join(name)
+            .to_string_lossy()
+            .into_owned(),
+    )
 }
 
 impl Default for Settings {
@@ -74,6 +169,8 @@ impl Default for Settings {
             bilingual: false,
             mono: true,
             book_understanding: true,
+            output_dir: String::new(),
+            output_format: String::new(),
         }
     }
 }
@@ -162,6 +259,9 @@ impl Settings {
                 self.api_key_env()
             ));
         }
+        // The engine exits with code 2 before emitting any event on an unknown format, which
+        // would surface as an unexplained "engine stopped". Catch it here instead.
+        normalize_output_format(&self.output_format)?;
         Ok(())
     }
 }
@@ -793,5 +893,79 @@ mod tests {
         let eff = describe(&s, false);
         assert_eq!(eff.api_key_env, "GEMINI_API_KEY");
         assert_eq!(eff.provider_kind, "gemini");
+    }
+
+    /// The shell composes `--out` itself because the engine's option takes a file path, so the
+    /// name has to match `writer_common._default_out` exactly. If the engine changes its
+    /// naming, this test is what notices.
+    #[test]
+    fn output_names_match_the_engine_default() {
+        assert_eq!(
+            default_output_name("D:\\Books\\Kokoro.epub", "zh", "", false),
+            "Kokoro.zh.epub"
+        );
+        // Bilingual copies get -bi before the extension, not after the language.
+        assert_eq!(
+            default_output_name("D:\\Books\\Kokoro.epub", "zh", "", true),
+            "Kokoro.zh-bi.epub"
+        );
+        // A .docx source defaults to docx output rather than epub.
+        assert_eq!(
+            default_output_name("D:\\a\\Report.docx", "en", "", false),
+            "Report.en.docx"
+        );
+        // Subtitles are always .srt, and the engine rejects --format for them.
+        assert_eq!(
+            default_output_name("D:\\a\\Show.srt", "zh", "pdf", false),
+            "Show.zh.srt"
+        );
+        // An explicit format wins over the input's extension.
+        assert_eq!(
+            default_output_name("D:\\a\\Book.epub", "ja", "markdown", false),
+            "Book.ja.md"
+        );
+    }
+
+    #[test]
+    fn an_empty_output_folder_keeps_the_engine_default() {
+        let mut s = Settings::default();
+        assert_eq!(output_path_for(&s, "D:\\Books\\Kokoro.epub"), None);
+        s.output_dir = "  ".into();
+        assert_eq!(output_path_for(&s, "D:\\Books\\Kokoro.epub"), None);
+    }
+
+    #[test]
+    fn a_chosen_folder_produces_an_absolute_output_file() {
+        let mut s = Settings::default();
+        s.output_dir = "D:\\Out".into();
+        s.target_lang = "zh".into();
+        s.output_format = "txt".into();
+        assert_eq!(
+            output_path_for(&s, "D:\\Books\\Kokoro.epub").as_deref(),
+            Some("D:\\Out\\Kokoro.zh.txt")
+        );
+    }
+
+    /// An unknown format makes the engine exit with code 2 before any event, which the shell
+    /// could only report as "engine stopped". Reject it while the user is still looking.
+    #[test]
+    fn an_unknown_output_format_is_rejected_with_the_allowed_list() {
+        assert!(normalize_output_format("PDF").is_ok());
+        assert_eq!(normalize_output_format(" Markdown ").unwrap(), "markdown");
+        assert_eq!(normalize_output_format("").unwrap(), "");
+        let err = normalize_output_format("mobi").unwrap_err();
+        assert!(err.contains("mobi"), "{err}");
+        assert!(err.contains("epub"), "{err}");
+    }
+
+    #[test]
+    fn validate_for_run_rejects_a_bad_output_format() {
+        let mut s = Settings::default();
+        s.provider = "custom".into();
+        s.custom_base_url = "http://localhost:11434/v1".into();
+        s.custom_model = "llama".into();
+        s.output_format = "mobi".into();
+        let err = s.validate_for_run(true).unwrap_err();
+        assert!(err.contains("不支持的输出格式"), "{err}");
     }
 }

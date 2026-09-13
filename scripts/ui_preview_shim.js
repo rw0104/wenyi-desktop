@@ -35,6 +35,8 @@
     bookUnderstanding: true,
     bilingual: false,
     mono: true,
+    outputDir: "D:\\Books\\output",
+    outputFormat: "",
   };
 
   const effective = {
