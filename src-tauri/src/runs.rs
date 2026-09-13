@@ -4,9 +4,12 @@
 //! directory by file *content*, not by name. That keeps resume correct even when a book is
 //! renamed or two files share a title.
 
+use std::collections::HashMap;
 use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -48,6 +51,40 @@ pub fn sha256_file(path: &Path) -> Option<String> {
         }
     }
     Some(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
+}
+
+/// Digest cache keyed by path, invalidated by size and modification time.
+///
+/// Hashing a book is a full file read; the shelf refreshes progress while a translation runs,
+/// and re-hashing a 20 MB EPUB on every refresh would be pure waste.
+fn digest_cache() -> &'static Mutex<HashMap<String, (u64, u128, String)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (u64, u128, String)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// SHA-256 of a file, reusing a previous result while size and mtime are unchanged.
+pub fn digest_of(path: &Path) -> Option<String> {
+    let meta = fs::metadata(path).ok()?;
+    let key = path.to_string_lossy().to_string();
+    let mtime = meta
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+
+    if let Ok(cache) = digest_cache().lock() {
+        if let Some((size, stamp, digest)) = cache.get(&key) {
+            if *size == meta.len() && *stamp == mtime {
+                return Some(digest.clone());
+            }
+        }
+    }
+    let digest = sha256_file(path)?;
+    if let Ok(mut cache) = digest_cache().lock() {
+        cache.insert(key, (meta.len(), mtime, digest.clone()));
+    }
+    Some(digest)
 }
 
 /// Find the state directory whose manifest declares `digest` as its source identity.
@@ -148,7 +185,7 @@ fn summarize(state_root: &Path, entry: &HistoryEntry) -> RunSummary {
     if !input_exists {
         return summary;
     }
-    let Some(digest) = sha256_file(&input_path) else {
+    let Some(digest) = digest_of(&input_path) else {
         return summary;
     };
     let Some((state_dir, manifest)) = find_state_by_digest(state_root, &digest) else {
@@ -173,6 +210,18 @@ fn summarize(state_root: &Path, entry: &HistoryEntry) -> RunSummary {
         .map(str::to_string);
     summary.state_dir = Some(state_dir.to_string_lossy().into_owned());
     summary
+}
+
+/// Summarize a book by path, for callers that hold an input rather than a history record.
+pub fn summarize_for(state_root: &Path, input: &str) -> RunSummary {
+    summarize(
+        state_root,
+        &HistoryEntry {
+            input: input.to_string(),
+            command: String::new(),
+            updated_at: String::new(),
+        },
+    )
 }
 
 /// Build the resume list from run history plus engine state.

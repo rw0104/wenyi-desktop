@@ -733,6 +733,227 @@ button.danger:hover:not(:disabled) {
   flex-shrink: 0;
 }
 
+/* ── The shelf ────────────────────────────────────────────────────────────────
+ * Covers stand on a soft contact shadow rather than on a drawn plank: the metaphor is
+ * carried by the shadow and the row rhythm, not by wood grain. */
+.shelf-head {
+  margin-bottom: 0.75rem;
+}
+.shelf {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0 0.5rem;
+  display: grid;
+  gap: 1.25rem 1rem;
+  grid-template-columns: repeat(auto-fill, minmax(7.5rem, 1fr));
+}
+/* A single book gets the full cover; the shelf is not a list of thumbnails yet. */
+.shelf.single {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.book {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  padding: 0.25rem;
+  /* Entrance is staggered by --i, capped so a large shelf never feels slow. */
+  animation: book-in 340ms var(--ease-out) both;
+  animation-delay: calc(min(var(--i, 0), 8) * 45ms);
+  transition: transform 160ms var(--ease-out);
+}
+@keyframes book-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.book-cover {
+  position: relative;
+  aspect-ratio: 2 / 3;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  background: var(--book-tint, var(--control));
+  border: 1px solid var(--hairline);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 10px 20px -14px rgba(0, 0, 0, 0.55);
+  transition: transform 180ms var(--ease-out), box-shadow 180ms var(--ease-out);
+}
+/* The contact shadow is what makes the cover read as standing on a surface. */
+.book-cover::after {
+  content: "";
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: -0.55rem;
+  height: 0.55rem;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at center, rgba(0, 0, 0, 0.32), transparent 72%);
+  opacity: 0.85;
+  transition: opacity 180ms var(--ease-out), transform 180ms var(--ease-out);
+}
+.book-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+/* Typographic stand-in for formats that carry no cover art. */
+.book-placeholder {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.375rem;
+  padding: 0.75rem;
+  text-align: center;
+  color: #fff;
+  background: linear-gradient(150deg, var(--book-tint, #2a4a5c), rgba(0, 0, 0, 0.35));
+}
+.book-placeholder .glyph {
+  font-size: 1.5rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  opacity: 0.95;
+}
+.book-placeholder .banner {
+  font-size: 0.625rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.7;
+}
+
+/* Hover lifts the book off the shelf; the suffix title reads as "pulled out". */
+.book:hover .book-cover {
+  transform: translateY(-4px);
+  box-shadow: 0 2px 4px rgba(0, 0, 0, 0.24), 0 16px 28px -16px rgba(0, 0, 0, 0.6);
+}
+.book:hover .book-cover::after {
+  opacity: 0.6;
+  transform: scaleX(0.92);
+}
+/* Feedback on the press, not on release. */
+.book:active .book-cover {
+  transform: translateY(-1px) scale(0.975);
+  transition-duration: 90ms;
+}
+
+.book.selected .book-cover {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-dim), 0 12px 24px -14px rgba(0, 0, 0, 0.6);
+}
+
+.book-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  min-width: 0;
+}
+.book-title {
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1.35;
+  letter-spacing: -0.005em;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.book-sub {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.book .progress-bar {
+  height: 0.25rem;
+}
+.book-missing {
+  color: var(--bad);
+}
+
+/* Remove sits on the cover but only appears on hover or focus, so it cannot be hit by
+ * accident and does not clutter the shelf. */
+.book-remove {
+  position: absolute;
+  top: 0.375rem;
+  right: 0.375rem;
+  width: 1.375rem;
+  height: 1.375rem;
+  padding: 0;
+  line-height: 1;
+  font-size: 0.875rem;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  opacity: 0;
+  transition: opacity 160ms var(--ease-out), transform 100ms var(--ease-out);
+}
+.book:hover .book-remove,
+.book:focus-within .book-remove,
+.book-remove:focus-visible {
+  opacity: 1;
+}
+.book-remove:active {
+  transform: scale(0.9);
+}
+
+/* While a translation occupies the engine, the shelf is read-only: switching books would
+ * leave the readout describing one book while another is being translated. */
+.shelf.locked .book {
+  cursor: default;
+}
+.shelf.locked .book:hover .book-cover {
+  transform: none;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2), 0 10px 20px -14px rgba(0, 0, 0, 0.55);
+}
+.shelf.locked .book-placeholder,
+.shelf.locked .book-meta {
+  opacity: 0.55;
+  transition: opacity 200ms var(--ease-out);
+}
+
+/* Single-book layout: the cover is the subject, the metadata sits beside it. */
+.shelf.single .book {
+  flex-direction: row;
+  align-items: flex-start;
+  gap: 1.25rem;
+}
+.shelf.single .book-cover {
+  flex: 0 0 auto;
+  width: 11rem;
+}
+.shelf.single .book-meta {
+  flex: 1 1 auto;
+  padding-top: 0.25rem;
+  gap: 0.5rem;
+}
+.shelf.single .book-title {
+  font-size: 1rem;
+  -webkit-line-clamp: 3;
+}
+.shelf.single .book-sub {
+  font-size: 0.8125rem;
+}
+
+/* Progress detail line: chapter, counts, remaining. */
+.progress-detail {
+  margin-top: 0.375rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.5;
+  min-height: 1.125rem;
+}
+
 /* Empty states answer "what is this and what do I do" rather than stating a fact. */
 .empty {
   padding: 1.5rem 0.5rem;
@@ -785,8 +1006,22 @@ dl.kv dd {
   }
   button:active:not(:disabled),
   .tab:active,
-  .drop-zone.active {
+  .drop-zone.active,
+  .book:active .book-cover,
+  .book:hover .book-cover {
     transform: none;
+  }
+  .book {
+    animation: book-fade 160ms ease both;
+    animation-delay: 0ms;
+  }
+  @keyframes book-fade {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
   }
   .fill {
     transition: none;

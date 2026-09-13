@@ -664,7 +664,7 @@ mod tests {
         assert!(error.contains("RELAY_KEY"), "got {error}");
 
         // Hosted providers still require a key.
-        let mut hosted = Settings::default();
+        let hosted = Settings::default();
         let hosted_error = hosted.validate_for_run(false).unwrap_err();
         assert!(hosted_error.contains("DEEPSEEK_API_KEY"), "got {hosted_error}");
         assert!(hosted.validate_for_run(true).is_ok());

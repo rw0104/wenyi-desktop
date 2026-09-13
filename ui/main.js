@@ -119,7 +119,25 @@ function setRunning(running) {
   for (const button of document.querySelectorAll("[data-resume]")) {
     button.disabled = running;
   }
+  // Switching books mid-run would leave the readout describing one book while another
+  // translates, so selection is locked for the duration.
+  const shelf = $("shelf-list");
+  if (shelf) shelf.classList.toggle("locked", running);
+  if (running) {
+    startChapterPoll();
+  } else {
+    stopChapterPoll();
+    progressState = { label: "", done: 0, total: 0, chaptersDone: 0, chaptersTotal: 0 };
+  }
+  updateProgressDetail();
 }
+
+// Consulted by the shelf before changing selection.
+window.__runningGuard = () => {
+  if (!state.running) return true;
+  log("翻译进行中，暂时不能切换书籍。请先点「取消」，或等它结束。", "error");
+  return false;
+};
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
 
@@ -240,6 +258,73 @@ async function refreshKeyStatus() {
 }
 
 let refreshModelKeyStatus = async () => {};
+
+// ── Run readout ───────────────────────────────────────────────────────────────
+// The bar answers "how far", the label answers "which chapter", and the detail line answers
+// "how much is left" -- three questions that a single percentage cannot carry.
+let progressState = { label: "", done: 0, total: 0, chaptersDone: 0, chaptersTotal: 0 };
+
+function updateProgressDetail() {
+  const detail = $("progress-detail");
+  if (!detail) return;
+  // Driven by available data rather than by the running flag: progressState is cleared when a
+  // run ends, so stale numbers cannot linger, and a caller that reports progress without
+  // owning the run loop still gets a readout.
+  if (progressState.total === 0 && progressState.chaptersTotal === 0) {
+    detail.textContent = "";
+    return;
+  }
+  const parts = [];
+  if (progressState.total > 0) {
+    const percent = Math.round((progressState.done / progressState.total) * 100);
+    parts.push(`已译 ${progressState.done}/${progressState.total} 段`);
+    parts.push(`完成 ${percent}% · 剩余 ${100 - percent}%`);
+  }
+  if (progressState.chaptersTotal > 0) {
+    const current = Math.min(progressState.chaptersDone + 1, progressState.chaptersTotal);
+    parts.push(`第 ${current}/${progressState.chaptersTotal} 章`);
+  }
+  detail.textContent = parts.join(" · ");
+}
+
+let chapterPoll = null;
+
+/** Refresh only the chapter counters while running; never re-render the shelf, which would
+ *  replay its entrance animation every few seconds. */
+function startChapterPoll() {
+  stopChapterPoll();
+  const tick = async () => {
+    if (!state.running) return;
+    try {
+      const shelf = await call("list_library");
+      const mine = shelf.find((book) => book.input === state.input);
+      if (mine) {
+        progressState.chaptersDone = mine.chaptersDone;
+        progressState.chaptersTotal = mine.chaptersTotal;
+        updateProgressDetail();
+      }
+    } catch (error) {
+      /* a failed poll is not worth surfacing */
+    }
+  };
+  chapterPoll = setInterval(tick, 6000);
+  tick();
+}
+
+function stopChapterPoll() {
+  if (chapterPoll) clearInterval(chapterPoll);
+  chapterPoll = null;
+}
+
+// The shelf owns selection; the run control only needs to know which book it is.
+window.__onBookSelected = (input) => {
+  state.input = input;
+  const label = $("file-name");
+  label.textContent = input;
+  label.title = input;
+  $("open-input-dir").disabled = false;
+  updateProgressDetail();
+};
 
 // Log milestones. The log is how a user tells a long run is alive, so routine progress must
 // appear there -- but logging every batch would flood it (hundreds of requests per book), so
@@ -440,6 +525,7 @@ async function startRun(command) {
   $("output-actions").hidden = true;
   state.lastOutputs = [];
   setProgress(0);
+  progressState = { label: "", done: 0, total: 0, chaptersDone: 0, chaptersTotal: 0 };
   setRunning(true);
   log(`启动 ${command} …`);
 
@@ -475,7 +561,7 @@ function handleEvent(payload) {
       announce("翻译已启动");
       break;
     case "stage":
-      $("progress-label").textContent = payload.label || "";
+      $("progress-label").textContent = payload.label || "准备中…";
       setProgress(null);
       noteStage(payload.label);
       if (payload.label) announce(payload.label);
@@ -485,7 +571,13 @@ function handleEvent(payload) {
       const done = payload.done || 0;
       const label = payload.label || "";
       setProgress(total > 0 ? done / total : null);
-      $("progress-label").textContent = `${label}${total > 0 ? ` (${done}/${total})` : ""}`;
+      // The label is the chapter being translated; the counts live in the detail line so the
+      // headline stays readable.
+      $("progress-label").textContent = label || "翻译中…";
+      progressState.label = label;
+      progressState.done = done;
+      progressState.total = total;
+      updateProgressDetail();
 
       // The first count on a resumed run is the work already on disk, which answers
       // "did my resume actually pick up where it left off?".
@@ -592,7 +684,7 @@ async function refreshRuns() {
       .join("");
 
     container.querySelectorAll("[data-resume]").forEach((button) => {
-      button.addEventListener("click", () => {
+      button.addEventListener("click", async () => {
         // Guard even though the button is disabled: the list may have rendered before a
         // run started, and switching books would otherwise stop the active one.
         if (state.running) {
@@ -600,7 +692,9 @@ async function refreshRuns() {
           return;
         }
         const run = runs[Number(button.dataset.resume)];
-        setInput(run.input);
+        // Continuing a book puts it on the shelf, so the two lists cannot disagree about
+        // what is being worked on.
+        SHELF.set(await call("add_books", { inputs: [run.input] }));
         selectTab("translate");
         startRun("translate");
       });
@@ -636,19 +730,24 @@ function setInput(path) {
   name.textContent = path;
   name.title = path;
   $("open-input-dir").disabled = false;
+  updateProgressDetail();
+}
+
+/** Add one or more books to the shelf. */
+async function addBooks(paths) {
+  try {
+    const picked = paths || (await call("pick_input_files"));
+    if (!picked || !picked.length) return;
+    await SHELF.add(picked);
+    log(picked.length === 1 ? `已加入书架：${baseName(picked[0])}` : `已加入 ${picked.length} 本书`, "done");
+    announce(picked.length === 1 ? `已加入 ${baseName(picked[0])}` : `已加入 ${picked.length} 本书`);
+  } catch (error) {
+    log("加入书架失败: " + error, "error");
+  }
 }
 
 async function chooseFile() {
-  try {
-    const picked = await call("pick_input_file");
-    if (picked) {
-      setInput(picked);
-      log("已选择: " + picked);
-      announce("已选择文件 " + baseName(picked));
-    }
-  } catch (error) {
-    log("选择文件失败: " + error, "error");
-  }
+  await addBooks(null);
 }
 
 // ── Wiring ────────────────────────────────────────────────────────────────────
@@ -693,6 +792,8 @@ async function init() {
       chooseFile();
     }
   });
+
+  $("add-books").addEventListener("click", () => addBooks(null));
 
   $("run").addEventListener("click", () => startRun("translate"));
   $("prepare").addEventListener("click", () => startRun("prepare"));
@@ -792,9 +893,11 @@ async function init() {
       const path = event.payload?.path;
       if (!path) return;
       dropZone.classList.remove("active");
-      setInput(path);
-      log("已拖入: " + path);
-      announce("已选择文件 " + baseName(path));
+      if (state.running) {
+        log("翻译进行中，暂时不能添加书籍。请先点「取消」。", "error");
+        return;
+      }
+      addBooks([path]);
     });
   }
 
@@ -805,6 +908,7 @@ async function init() {
     await refreshKeyStatus();
     await refreshMineruStatus();
     await refreshEffective();
+    SHELF.set(await call("list_library"));
     refreshRuns();
   } catch (error) {
     log("初始化失败: " + error, "error");

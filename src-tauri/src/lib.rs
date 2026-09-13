@@ -10,7 +10,11 @@
 //! The translation engine stays a separate process: long runs are crash-isolated,
 //! interruptible and resumable, matching the engine's own checkpoint and lock design.
 
+mod cover;
+mod library;
 mod runs;
+
+use std::fs;
 mod secrets;
 mod settings;
 
@@ -262,6 +266,150 @@ async fn list_models(
         message: format!("共 {} 个模型。", models.len()),
         models,
     })
+}
+
+/// A book as the shelf presents it: identity, progress and existence.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ShelfBook {
+    input: String,
+    #[serde(flatten)]
+    summary: runs::RunSummary,
+}
+
+fn shelf(app: &AppHandle) -> Result<Vec<ShelfBook>, String> {
+    let workspace = settings::workspace_dir(app)?;
+    let config = settings::config_dir(app)?;
+    let state_root = workspace.join("state");
+    Ok(library::load(&config)
+        .into_iter()
+        .map(|entry| {
+            let summary = runs::summarize_for(&state_root, &entry.input);
+            ShelfBook {
+                input: entry.input,
+                summary,
+            }
+        })
+        .collect())
+}
+
+#[tauri::command]
+fn list_library(app: AppHandle) -> Result<Vec<ShelfBook>, String> {
+    shelf(&app)
+}
+
+/// Add books to the shelf and return the updated shelf.
+#[tauri::command]
+fn add_books(app: AppHandle, inputs: Vec<String>) -> Result<Vec<ShelfBook>, String> {
+    let config = settings::config_dir(&app)?;
+    library::add(&config, &inputs, &snapshot())?;
+    shelf(&app)
+}
+
+/// Remove a book from the shelf. The file on disk is left alone.
+#[tauri::command]
+fn remove_book(app: AppHandle, input: String) -> Result<Vec<ShelfBook>, String> {
+    let config = settings::config_dir(&app)?;
+    library::remove(&config, &input)?;
+    shelf(&app)
+}
+
+/// Cover art as a data URL, or None when the format carries none.
+///
+/// Returned one book at a time rather than inside the shelf listing: covers dominate the
+/// payload, and fetching them separately lets the shelf paint immediately and fill in.
+#[tauri::command]
+fn book_cover(app: AppHandle, input: String) -> Result<Option<String>, String> {
+    let path = PathBuf::from(&input);
+    if !path.is_file() {
+        return Ok(None);
+    }
+    let is_epub = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.eq_ignore_ascii_case("epub"))
+        .unwrap_or(false);
+    if !is_epub {
+        return Ok(None);
+    }
+
+    let config = settings::config_dir(&app)?;
+    let cache_dir = cover::cover_cache_dir(&config)?;
+    let key = runs::digest_of(&path).unwrap_or_else(|| "unknown".into());
+    let cached = cache_dir.join(&key);
+
+    // Reuse a previous extraction: unzipping a book per shelf paint would be wasteful.
+    if let (Ok(meta), Ok(bytes)) = (fs::metadata(&cached), fs::read(&cached)) {
+        if meta.len() > 0 {
+            return Ok(Some(data_url(&mime_from_bytes(&bytes), &bytes)));
+        }
+    }
+
+    let Some(found) = cover::epub_cover(&path) else {
+        return Ok(None);
+    };
+    let _ = fs::write(&cached, &found.bytes);
+    Ok(Some(data_url(&found.mime, &found.bytes)))
+}
+
+fn mime_from_bytes(bytes: &[u8]) -> String {
+    if bytes.starts_with(&[0x89, b'P', b'N', b'G']) {
+        "image/png".into()
+    } else if bytes.starts_with(b"GIF8") {
+        "image/gif".into()
+    } else if bytes.len() > 12 && &bytes[8..12] == b"WEBP" {
+        "image/webp".into()
+    } else {
+        "image/jpeg".into()
+    }
+}
+
+fn data_url(mime: &str, bytes: &[u8]) -> String {
+    format!("data:{mime};base64,{}", base64_encode(bytes))
+}
+
+/// Minimal base64 for embedding a cover. Avoids a dependency for one call site.
+fn base64_encode(input: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(input.len().div_ceil(3) * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let triple = (b0 << 16) | (b1 << 8) | b2;
+        out.push(TABLE[((triple >> 18) & 63) as usize] as char);
+        out.push(TABLE[((triple >> 12) & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { TABLE[((triple >> 6) & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { TABLE[(triple & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+/// Open the native picker for one or more books.
+#[tauri::command]
+async fn pick_input_files(app: AppHandle) -> Result<Vec<String>, String> {
+    let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<FilePath>>>();
+    app.dialog()
+        .file()
+        .set_title("Select one or more books")
+        .add_filter(
+            "Books and subtitles",
+            &["epub", "fb2", "txt", "md", "html", "pdf", "docx", "srt"],
+        )
+        .pick_files(move |paths| {
+            let _ = tx.send(paths);
+        });
+
+    let picked = tauri::async_runtime::spawn_blocking(move || rx.recv().ok().flatten())
+        .await
+        .map_err(|e| e.to_string())?;
+
+    Ok(picked
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|path| path.into_path().ok())
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect())
 }
 
 #[tauri::command]
@@ -770,6 +918,11 @@ pub fn run() {
             save_settings,
             get_effective_config,
             list_models,
+            list_library,
+            add_books,
+            remove_book,
+            book_cover,
+            pick_input_files,
             set_api_key,
             clear_api_key,
             api_key_status,
@@ -821,6 +974,28 @@ mod tests {
             let pos = args.iter().position(|a| a == flag).unwrap();
             assert!(pos > subcommand, "{flag} must follow the subcommand");
         }
+    }
+
+    #[test]
+    fn base64_matches_known_vectors() {
+        // Every padding case, since a wrong tail silently corrupts the embedded cover.
+        assert_eq!(base64_encode(b""), "");
+        assert_eq!(base64_encode(b"f"), "Zg==");
+        assert_eq!(base64_encode(b"fo"), "Zm8=");
+        assert_eq!(base64_encode(b"foo"), "Zm9v");
+        assert_eq!(base64_encode(b"foob"), "Zm9vYg==");
+        assert_eq!(base64_encode(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64_encode(b"foobar"), "Zm9vYmFy");
+        // Bytes above 0x7F must not be mangled.
+        assert_eq!(base64_encode(&[0xFF, 0xFE, 0xFD]), "//79");
+    }
+
+    #[test]
+    fn mime_is_sniffed_from_magic_bytes() {
+        assert_eq!(mime_from_bytes(&[0x89, b'P', b'N', b'G', 0x0D]), "image/png");
+        assert_eq!(mime_from_bytes(b"GIF89a"), "image/gif");
+        assert_eq!(mime_from_bytes(b"RIFF____WEBPVP8 "), "image/webp");
+        assert_eq!(mime_from_bytes(&[0xFF, 0xD8, 0xFF]), "image/jpeg");
     }
 
     #[test]

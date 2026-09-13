@@ -96,12 +96,78 @@
     },
   ];
 
+  // A shelf of three: one with a cover, one without (typographic placeholder), one whose
+  // file has gone missing.
+  const svgCover = (title, from, to) =>
+    "data:image/svg+xml;utf8," +
+    encodeURIComponent(
+      `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 300">
+         <defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+           <stop offset="0" stop-color="${from}"/><stop offset="1" stop-color="${to}"/>
+         </linearGradient></defs>
+         <rect width="200" height="300" fill="url(#g)"/>
+         <text x="100" y="150" fill="#ffffff" font-size="26" font-family="serif"
+               text-anchor="middle">${title}</text>
+       </svg>`
+    );
+
+  const shelfBooks = [
+    {
+      input: "C:\\Users\\you\\Downloads\\TheEconomist.2026.09.12.epub",
+      inputExists: true,
+      command: "translate",
+      updatedAt: "1757600000",
+      title: "TheEconomist.2026.09.12",
+      hasState: true,
+      chaptersDone: 10,
+      chaptersTotal: 21,
+      sourceLang: "en",
+      targetLang: "zh",
+      stateDir: null,
+      outputDir: "C:\\Users\\you\\Downloads\\output",
+      outputs: [],
+      cover: svgCover("Economist", "#1d3f57", "#0a1f2e"),
+    },
+    {
+      input: "C:\\Users\\you\\Books\\Kokoro.txt",
+      inputExists: true,
+      command: "translate",
+      updatedAt: "1757500000",
+      title: "心",
+      hasState: true,
+      chaptersDone: 0,
+      chaptersTotal: 0,
+      sourceLang: "ja",
+      targetLang: "zh",
+      stateDir: null,
+      outputDir: "C:\\Users\\you\\Books\\output",
+      outputs: [],
+      cover: null,
+    },
+    {
+      input: "C:\\Users\\you\\Books\\moved-elsewhere.docx",
+      inputExists: false,
+      command: "translate",
+      updatedAt: "1757400000",
+      title: "Agentic Design Patterns 完整版",
+      hasState: false,
+      chaptersDone: 0,
+      chaptersTotal: 0,
+      sourceLang: "en",
+      targetLang: "zh",
+      stateDir: null,
+      outputDir: "C:\\Users\\you\\Books\\output",
+      outputs: [],
+      cover: null,
+    },
+  ];
+
   const listeners = {};
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
   window.__TAURI__ = {
     core: {
-      invoke: async (command) => {
+      invoke: async (command, args) => {
         await sleep(0); // keep the async shape of the real bridge
         switch (command) {
           case "get_paths":
@@ -114,6 +180,16 @@
             return { CUSTOM_API_KEY: false, MINERU_API_KEY: false };
           case "get_effective_config":
             return effective;
+          case "list_library":
+            return shelfBooks.map(({ cover, ...book }) => book);
+          case "add_books":
+            return shelfBooks.map(({ cover, ...book }) => book);
+          case "remove_book":
+            return shelfBooks.slice(1).map(({ cover, ...book }) => book);
+          case "book_cover": {
+            const found = shelfBooks.find((b) => b.input === args?.input);
+            return found ? found.cover : null;
+          }
           case "list_models":
             return {
               ok: true,
@@ -153,7 +229,8 @@
 
   window.addEventListener("DOMContentLoaded", async () => {
     await sleep(60);
-    document.getElementById("file-name").textContent = "D:\\Books\\Kokoro.epub";
+    document.getElementById("file-name").textContent =
+      "C:\\Users\\you\\Downloads\\TheEconomist.2026.09.12.epub";
     document.getElementById("open-input-dir").disabled = false;
 
     // Open on Settings so the resolved request target and the ignored-field warning are
@@ -180,7 +257,11 @@
         "PDF input needs a MinerU key, which is separate from the translation model key. " +
         "Add it under Settings.",
     });
-    emit({ event: "progress", done: 68, total: 110, label: "心 · 第二十三章" });
+    // Enter the real running state so the preview shows what a run actually looks like:
+    // the shelf locks, the cancel button enables, and the chapter poll reports counters.
+    if (typeof setRunning === "function") setRunning(true);
+
+    emit({ event: "progress", done: 653, total: 1313, label: "Middle East & Africa" });
     emit({ event: "usage", usage: { totals: { total_tokens: 486213 } } });
     await sleep(40);
   });

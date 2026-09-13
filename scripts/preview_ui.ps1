@@ -43,16 +43,41 @@ Remove-Item -Recurse -Force $Stage -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force -Path $Stage, $OutDir | Out-Null
 Copy-Item (Join-Path $UiDir "*") $Stage -Recurse -Force
 
-$shim = Get-Content (Join-Path $PSScriptRoot "ui_preview_shim.js") -Raw
-$html = Get-Content (Join-Path $Stage "index.html") -Raw
+# Read and write as explicit UTF-8. Windows PowerShell 5.1 reads a BOM-less file as the
+# system ANSI codepage, which silently turns every Chinese string in the UI into mojibake --
+# and the screenshots then document a broken interface rather than the real one.
+$Utf8 = New-Object System.Text.UTF8Encoding($false)
+$shim = [System.IO.File]::ReadAllText((Join-Path $PSScriptRoot "ui_preview_shim.js"), [System.Text.Encoding]::UTF8)
+$html = [System.IO.File]::ReadAllText((Join-Path $Stage "index.html"), [System.Text.Encoding]::UTF8)
 # The shim must run before main.js, which captures window.__TAURI__ at load time.
 $html = $html.Replace(
     '<script src="main.js"></script>',
     "<script>`n$shim`n</script>`n    <script src=`"main.js`"></script>"
 )
-[System.IO.File]::WriteAllText(
-    (Join-Path $Stage "index.html"), $html, (New-Object System.Text.UTF8Encoding($false))
-)
+$staged = Join-Path $Stage "index.html"
+[System.IO.File]::WriteAllText($staged, $html, $Utf8)
+
+# Guard the guard: verify the staged page survived the encoding round trip before rendering.
+# A preview that documents mojibake is worse than no preview, because it looks authoritative.
+# The character class below is written as \uXXXX escapes so this script stays pure ASCII:
+# PowerShell 5.1 reads a BOM-less .ps1 as the ANSI codepage, so non-ASCII here would itself
+# be mangled. Those code points are the signature of UTF-8 bytes decoded as GBK.
+# Rather than guess at mojibake code points, take a sample of the source page's own
+# non-ASCII text and demand the staged page still contains it verbatim. Sampling at runtime
+# keeps this script pure ASCII, which it must be: PowerShell 5.1 reads a BOM-less .ps1 as
+# the ANSI codepage, so non-ASCII here would corrupt the checker itself.
+$check = [System.IO.File]::ReadAllText($staged, [System.Text.Encoding]::UTF8)
+$source = [System.IO.File]::ReadAllText((Join-Path $UiDir "index.html"), [System.Text.Encoding]::UTF8)
+$samples = [regex]::Matches($source, '>([^<>\x00-\x7F]{3,14})<') |
+    ForEach-Object { $_.Groups[1].Value.Trim() } |
+    Where-Object { $_.Length -ge 3 } |
+    Select-Object -Unique -First 5
+if ($samples.Count -eq 0) { throw "No non-ASCII sample found in the source page." }
+$missing = @($samples | Where-Object { -not $check.Contains($_) })
+if ($missing.Count -gt 0) {
+    throw "Staged page lost its text: $($missing.Count)/$($samples.Count) samples missing (encoding round trip failed)."
+}
+Write-Host "staged page verified: $($samples.Count) text samples intact"
 
 $page = "file:///" + ((Join-Path $Stage "index.html") -replace '\\', '/')
 
