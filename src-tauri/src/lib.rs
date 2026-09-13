@@ -627,9 +627,14 @@ async fn run_engine(
         return Err(format!("Input file does not exist: {input}"));
     }
 
-    // Cancel any previous run before starting a new one.
-    if let Some(child) = state.0.lock().unwrap().take() {
-        let _ = child.kill();
+    // Refuse rather than terminate: a second request while one is active is a slip, and
+    // silently stopping the user's translation is worse than declining to start. Completed
+    // batches are checkpointed either way, but they should not have to discover that the
+    // first run vanished.
+    if state.0.lock().unwrap().is_some() {
+        return Err(
+            "已有翻译任务在运行。请先点「取消」停止它，或等它结束后再开始下一本。".into(),
+        );
     }
 
     let user_settings = settings::load(&app)?;

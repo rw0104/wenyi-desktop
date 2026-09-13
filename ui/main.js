@@ -114,6 +114,11 @@ function setRunning(running) {
   $("cancel").disabled = !running;
   $("run").disabled = running;
   $("prepare").disabled = running;
+  // The resume list offers its own start buttons; they must not be able to hijack the slot
+  // while a translation occupies it.
+  for (const button of document.querySelectorAll("[data-resume]")) {
+    button.disabled = running;
+  }
 }
 
 // ── Tabs ──────────────────────────────────────────────────────────────────────
@@ -577,7 +582,7 @@ async function refreshRuns() {
               </div>
             </div>
             <div class="run-actions">
-              <button class="primary small" data-resume="${index}" ${run.inputExists ? "" : "disabled"}>
+              <button class="primary small" data-resume="${index}" ${run.inputExists && !state.running ? "" : "disabled"}>
                 继续翻译
               </button>
               ${openBtn}
@@ -588,6 +593,12 @@ async function refreshRuns() {
 
     container.querySelectorAll("[data-resume]").forEach((button) => {
       button.addEventListener("click", () => {
+        // Guard even though the button is disabled: the list may have rendered before a
+        // run started, and switching books would otherwise stop the active one.
+        if (state.running) {
+          log("已有翻译任务在运行。请先点「取消」，或等它结束后再切换。", "error");
+          return;
+        }
         const run = runs[Number(button.dataset.resume)];
         setInput(run.input);
         selectTab("translate");

@@ -1,6 +1,6 @@
 [package]
 name = "wenyi-desktop"
-version = "0.4.1"
+version = "0.4.2"
 description = "Desktop shell for Wenyi translation engine"
 edition = "2021"
 rust-version = "1.77"
