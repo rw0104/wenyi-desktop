@@ -151,6 +151,7 @@ function applySettingsToForm(s) {
   $("source-lang").value = s.sourceLang;
   $("target-lang").value = s.targetLang;
   $("provider").value = s.provider;
+  $("model-override").value = s.modelOverride || "";
   $("custom-base-url").value = s.customBaseUrl;
   $("custom-model").value = s.customModel;
   $("custom-key-env").value = s.customKeyEnv;
@@ -167,6 +168,7 @@ function readSettingsFromForm() {
     sourceLang: $("source-lang").value,
     targetLang: $("target-lang").value,
     provider: $("provider").value,
+    modelOverride: $("model-override").value.trim(),
     customBaseUrl: $("custom-base-url").value.trim(),
     customModel: $("custom-model").value.trim(),
     customKeyEnv: $("custom-key-env").value.trim(),
@@ -185,6 +187,7 @@ const MINERU_ACCOUNT = "MINERU_API_KEY";
 function syncProviderFields() {
   const provider = $("provider").value;
   $("custom-fields").hidden = provider !== "custom";
+  $("model-row").hidden = provider === "custom";
   $("key-label").textContent =
     provider === "custom"
       ? "自定义接口密钥（本地模型可留空不设置）"
@@ -288,6 +291,52 @@ function wireCredential({ accountName, input, status, save, clear, label }) {
   return refresh;
 }
 
+/**
+ * Ask the endpoint which models it serves.
+ *
+ * The engine presets pin one model id each, so without this a user cannot discover what
+ * their provider actually offers now -- which is how someone ends up stuck on an old model.
+ */
+async function fetchModels() {
+  const button = $("fetch-models");
+  const status = $("models-status");
+  button.disabled = true;
+  status.className = "muted";
+  status.textContent = "正在获取…";
+  try {
+    await saveSettings();
+    const result = await call("list_models", {
+      settings: readSettingsFromForm(),
+      ephemeralApiKey: $("api-key").value.trim() || null,
+    });
+
+    const list = $("model-options");
+    list.innerHTML = "";
+    if (result.ok) {
+      for (const id of result.models) {
+        const option = document.createElement("option");
+        option.value = id;
+        list.append(option);
+      }
+      status.className = "ok";
+      status.textContent = `${result.message}点输入框可选择。`;
+      const current = $("model-override").value.trim();
+      if (current && !result.models.includes(current)) {
+        status.textContent += `（当前填写的 ${current} 不在列表中）`;
+      }
+      log(`获取到 ${result.models.length} 个模型：${result.models.join(", ")}`, "done");
+    } else {
+      status.className = "error";
+      status.textContent = result.message;
+      log("获取模型列表失败: " + result.message, "error");
+    }
+  } catch (error) {
+    status.className = "error";
+    status.textContent = String(error);
+  } finally {
+    button.disabled = false;
+  }
+}
 async function runConnectionTest() {
   const button = $("test-connection");
   const out = $("test-result");
@@ -558,6 +607,7 @@ const AUTO_SAVE_IDS = [
   "proxy",
   "custom-base-url",
   "custom-model",
+  "model-override",
 ];
 
 async function init() {
@@ -662,9 +712,10 @@ async function init() {
     refreshEffective();
     saveSettings();
   });
-  for (const id of ["custom-base-url", "custom-model"]) {
+  for (const id of ["custom-base-url", "custom-model", "model-override"]) {
     $(id).addEventListener("change", refreshEffective);
   }
+  $("fetch-models").addEventListener("click", fetchModels);
   $("test-connection").addEventListener("click", runConnectionTest);
   $("refresh-runs").addEventListener("click", refreshRuns);
 

@@ -35,6 +35,9 @@ pub struct Settings {
     pub target_lang: String,
     /// `deepseek` | `gemini` | `custom` (any OpenAI-compatible endpoint).
     pub provider: String,
+    /// Model id for the built-in providers. Empty keeps the engine preset's model, which
+    /// pins a single older id for every tier; set this to use a newer one.
+    pub model_override: String,
     /// Custom provider fields, used only when `provider == "custom"`.
     pub custom_base_url: String,
     pub custom_model: String,
@@ -55,6 +58,7 @@ impl Default for Settings {
             source_lang: "auto".into(),
             target_lang: "zh".into(),
             provider: "deepseek".into(),
+            model_override: String::new(),
             custom_base_url: String::new(),
             custom_model: String::new(),
             custom_key_env: String::new(),
@@ -68,20 +72,37 @@ impl Default for Settings {
     }
 }
 
+/// Storage name used for a custom endpoint's key when the user has not chosen one.
+pub const DEFAULT_CUSTOM_KEY_ENV: &str = "CUSTOM_API_KEY";
+
 impl Settings {
-    /// Environment variable that holds the API key for the selected provider.
+    /// Credential name (an environment-variable name) under which this configuration's API
+    /// key is stored and handed to the engine.
+    ///
+    /// The name is an advanced detail, so it is defaulted rather than left blank: asking a
+    /// user to invent a variable name before they have anywhere to paste the key is an
+    /// indirection that leaves them unable to supply credentials at all.
     pub fn api_key_env(&self) -> String {
         match self.provider.as_str() {
             "gemini" => "GEMINI_API_KEY".into(),
-            "custom" if !self.custom_key_env.trim().is_empty() => self.custom_key_env.trim().into(),
-            "custom" => String::new(),
+            "custom" => {
+                let named = self.custom_key_env.trim();
+                if named.is_empty() {
+                    DEFAULT_CUSTOM_KEY_ENV.into()
+                } else {
+                    named.into()
+                }
+            }
             _ => "DEEPSEEK_API_KEY".into(),
         }
     }
 
-    /// Whether the provider needs an API key at all (local endpoints do not).
+    /// Whether an API key is mandatory.
+    ///
+    /// A custom endpoint is frequently a local model that needs no credentials, so its key
+    /// is optional; the hosted providers require one.
     pub fn requires_api_key(&self) -> bool {
-        !self.api_key_env().is_empty()
+        self.provider != "custom"
     }
 }
 
@@ -145,13 +166,18 @@ pub fn save(app: &AppHandle, settings: &Settings) -> Result<(), String> {
     let path = settings_path(app)?;
     let text = serde_json::to_string_pretty(settings).map_err(|e| e.to_string())?;
     fs::write(&path, text).map_err(|e| e.to_string())?;
-    write_engine_config(app, settings)
+    let key_stored = crate::secrets::get(&settings.api_key_env()).is_some();
+    write_engine_config(app, settings, key_stored)
 }
 
 /// Write `config.yaml` for the engine, derived entirely from `settings`.
-pub fn write_engine_config(app: &AppHandle, settings: &Settings) -> Result<(), String> {
+pub fn write_engine_config(
+    app: &AppHandle,
+    settings: &Settings,
+    custom_key_stored: bool,
+) -> Result<(), String> {
     let path = config_file(app)?;
-    fs::write(&path, render_config_yaml(settings)).map_err(|e| e.to_string())
+    fs::write(&path, render_config_yaml(settings, custom_key_stored)).map_err(|e| e.to_string())
 }
 
 /// Quote a scalar for YAML so URLs and model IDs cannot break the document.
@@ -163,14 +189,40 @@ fn yaml_scalar(value: &str) -> String {
 ///
 /// Only documented top-level sections are emitted: the engine rejects unknown keys, so an
 /// accidental field here would make every run fail at startup.
-pub fn render_config_yaml(settings: &Settings) -> String {
+///
+/// `custom_key_stored` gates `api_key_env` for a custom endpoint: declaring a credential
+/// variable that holds nothing would make a local, keyless endpoint look misconfigured.
+pub fn render_config_yaml(settings: &Settings, custom_key_stored: bool) -> String {
+    let override_model = settings.model_override.trim();
+    // The preset pins one model id across all three tiers. Replacing those profiles keeps
+    // the preset's connection (endpoint and key variable) while choosing the model.
+    let preset_override = |preset: &str| {
+        let mut out = format!("llm:\n  preset: {preset}\n  models:\n");
+        for profile in ["default_strong", "default_cheap", "default_fast"] {
+            out.push_str(&format!(
+                "    {profile}:\n      provider: default\n      model: {}\n",
+                yaml_scalar(override_model)
+            ));
+        }
+        out
+    };
+
     let llm = match settings.provider.as_str() {
-        "gemini" => "llm:\n  preset: gemini\n".to_string(),
-        "custom" => {
-            let key_line = if settings.custom_key_env.trim().is_empty() {
-                String::new()
+        "gemini" => {
+            if override_model.is_empty() {
+                "llm:\n  preset: gemini\n".to_string()
             } else {
-                format!("      api_key_env: {}\n", yaml_scalar(settings.custom_key_env.trim()))
+                preset_override("gemini")
+            }
+        }
+        "custom" => {
+            let key_line = if custom_key_stored {
+                format!(
+                    "      api_key_env: {}\n",
+                    yaml_scalar(&settings.api_key_env())
+                )
+            } else {
+                String::new()
             };
             format!(
                 "llm:\n  providers:\n    custom:\n      kind: openai-compatible\n      base_url: {}\n{key_line}  models:\n    custom_model:\n      provider: custom\n      model: {}\n  tiers:\n    strong: custom_model\n    cheap: custom_model\n    fast: custom_model\n",
@@ -178,7 +230,13 @@ pub fn render_config_yaml(settings: &Settings) -> String {
                 yaml_scalar(settings.custom_model.trim()),
             )
         }
-        _ => "llm:\n  preset: deepseek\n".to_string(),
+        _ => {
+            if override_model.is_empty() {
+                "llm:\n  preset: deepseek\n".to_string()
+            } else {
+                preset_override("deepseek")
+            }
+        }
     };
 
     format!(
@@ -221,7 +279,7 @@ pub struct EffectiveConfig {
     pub notes: Vec<String>,
 }
 
-pub fn describe(settings: &Settings) -> EffectiveConfig {
+pub fn describe(settings: &Settings, custom_key_stored: bool) -> EffectiveConfig {
     let custom_filled = !settings.custom_base_url.trim().is_empty()
         || !settings.custom_model.trim().is_empty();
     let mut notes = Vec::new();
@@ -229,35 +287,70 @@ pub fn describe(settings: &Settings) -> EffectiveConfig {
     let (endpoint, model, provider_kind) = match settings.provider.as_str() {
         "gemini" => (
             "generativelanguage.googleapis.com".to_string(),
-            "preset default".to_string(),
+            if settings.model_override.trim().is_empty() {
+                "gemini-3.6-flash (预设默认)".to_string()
+            } else {
+                settings.model_override.trim().to_string()
+            },
             "gemini".to_string(),
         ),
         "custom" => {
             let base = settings.custom_base_url.trim();
             let mdl = settings.custom_model.trim();
             if base.is_empty() {
-                notes.push("Custom provider needs a base_url.".into());
+                notes.push("自定义提供方还需要填写 base_url。".into());
             }
             if mdl.is_empty() {
-                notes.push("Custom provider needs a model id.".into());
+                notes.push("自定义提供方还需要填写模型 ID。".into());
             }
             (
-                if base.is_empty() { "(not set)".into() } else { base.to_string() },
-                if mdl.is_empty() { "(not set)".into() } else { mdl.to_string() },
+                if base.is_empty() { "(未填写)".into() } else { base.to_string() },
+                if mdl.is_empty() { "(未填写)".into() } else { mdl.to_string() },
                 "openai-compatible".to_string(),
             )
         }
         _ => (
             "https://api.deepseek.com".to_string(),
-            "deepseek-flash".to_string(),
+            if settings.model_override.trim().is_empty() {
+                "deepseek-flash (预设默认，较旧)".to_string()
+            } else {
+                settings.model_override.trim().to_string()
+            },
             "deepseek".to_string(),
         ),
     };
 
+    // Most actionable first: an ignored field or a missing key is a configuration mistake,
+    // whereas the pinned-model note is advice.
     if custom_filled && settings.provider != "custom" {
         notes.push(
-            "The custom endpoint fields are filled in but the provider above is not \
-             \"custom\", so they are ignored. Choose the custom provider to use them."
+            "自定义接口地址和模型 ID 已填写，但上面的提供方不是「自定义」，因此它们会被忽略。\
+             要使用它们，请把提供方切换为「自定义」。"
+                .into(),
+        );
+    }
+
+    if settings.provider == "custom" && !custom_key_stored {
+        let named = !settings.custom_key_env.trim().is_empty();
+        notes.push(
+            if named {
+                format!(
+                    "尚未存入密钥：如果这个接口需要鉴权，请把密钥存入凭据库（将作为 {} 发送）。\
+                     本地模型不需要密钥。",
+                    settings.api_key_env()
+                )
+            } else {
+                "尚未存入密钥：如果这个接口需要鉴权（中转站、云服务），请把密钥填入\
+                 「接口密钥」并存入凭据库。本地模型不需要密钥。"
+                    .into()
+            },
+        );
+    }
+
+    if settings.provider != "custom" && settings.model_override.trim().is_empty() {
+        notes.push(
+            "当前使用引擎预设里写死的模型。如果这个模型已过时，请在上面填写模型 ID，\
+             或点「获取模型列表」从接口拉取可用模型。"
                 .into(),
         );
     }
@@ -317,14 +410,20 @@ mod tests {
         s.provider = "gemini".into();
         assert_eq!(s.api_key_env(), "GEMINI_API_KEY");
 
-        // A custom endpoint without a named variable needs no key (local models).
+        // A custom endpoint always has a usable credential name, so a user has somewhere
+        // to paste a key without first inventing a variable name. The key stays optional
+        // because the endpoint may be a local model that needs no credentials.
         s.provider = "custom".into();
         s.custom_key_env = String::new();
-        assert_eq!(s.api_key_env(), "");
+        assert_eq!(s.api_key_env(), "CUSTOM_API_KEY");
         assert!(!s.requires_api_key());
 
         s.custom_key_env = "  MY_API_KEY  ".into();
         assert_eq!(s.api_key_env(), "MY_API_KEY");
+        assert!(!s.requires_api_key());
+
+        // Hosted providers still require a key.
+        s.provider = "deepseek".into();
         assert!(s.requires_api_key());
     }
 
@@ -334,7 +433,7 @@ mod tests {
         s.review = false;
         s.polish = false;
         s.bilingual = true;
-        let yaml = render_config_yaml(&s);
+        let yaml = render_config_yaml(&s, false);
 
         assert!(yaml.contains("preset: deepseek"));
         assert!(yaml.contains("review: false"));
@@ -342,6 +441,7 @@ mod tests {
         assert!(yaml.contains("bilingual: true"));
         assert!(yaml.contains("source: \"auto\""));
         assert!(yaml.contains("target: \"zh\""));
+        assert!(!yaml.contains("api_key_env"));
     }
 
     #[test]
@@ -351,7 +451,7 @@ mod tests {
         s.custom_base_url = "http://localhost:11434/v1".into();
         s.custom_model = "qwen2.5:7b".into();
         s.custom_key_env = "MY_KEY".into();
-        let yaml = render_config_yaml(&s);
+        let yaml = render_config_yaml(&s, true);
 
         assert!(yaml.contains("kind: openai-compatible"));
         assert!(yaml.contains("base_url: \"http://localhost:11434/v1\""));
@@ -363,23 +463,29 @@ mod tests {
         }
     }
 
+    /// A local, keyless endpoint must not be told to read a credential variable, or the
+    /// engine looks for a key that legitimately does not exist.
     #[test]
-    fn custom_provider_without_a_key_variable_omits_the_field() {
+    fn custom_provider_without_a_stored_key_omits_the_variable() {
         let mut s = Settings::default();
         s.provider = "custom".into();
         s.custom_base_url = "http://localhost:8000/v1".into();
         s.custom_model = "local".into();
         s.custom_key_env = String::new();
 
-        let yaml = render_config_yaml(&s);
+        let yaml = render_config_yaml(&s, false);
         assert!(!yaml.contains("api_key_env"));
         assert!(yaml.contains("kind: openai-compatible"));
+
+        // Once a key is stored, the variable is declared using the defaulted name.
+        let yaml_with_key = render_config_yaml(&s, true);
+        assert!(yaml_with_key.contains("api_key_env: \"CUSTOM_API_KEY\""));
     }
 
     /// The engine rejects unknown top-level sections, so a stray key would fail every run.
     #[test]
     fn only_documented_top_level_sections_are_emitted() {
-        let yaml = render_config_yaml(&Settings::default());
+        let yaml = render_config_yaml(&Settings::default(), false);
         for line in yaml.lines() {
             if line.is_empty() || line.starts_with('#') || line.starts_with(' ') {
                 continue;
@@ -398,7 +504,7 @@ mod tests {
         s.provider = "custom".into();
         s.custom_model = "weird\"model\\name".into();
         s.custom_base_url = "http://x/v1".into();
-        let yaml = render_config_yaml(&s);
+        let yaml = render_config_yaml(&s, false);
         assert!(yaml.contains(r#"model: "weird\"model\\name""#));
     }
 
@@ -414,12 +520,51 @@ mod tests {
 
     #[test]
     fn deepseek_describe_reports_the_official_endpoint() {
-        let eff = describe(&Settings::default());
+        let eff = describe(&Settings::default(), false);
         assert_eq!(eff.endpoint, "https://api.deepseek.com");
-        assert_eq!(eff.model, "deepseek-flash");
+        assert!(eff.model.starts_with("deepseek-flash"), "got {}", eff.model);
         assert_eq!(eff.api_key_env, "DEEPSEEK_API_KEY");
         assert!(!eff.custom_fields_ignored);
-        assert!(eff.notes.is_empty());
+        // No override set, so the preset's pinned model is flagged as a default.
+        assert_eq!(eff.notes.len(), 1);
+        assert!(eff.notes[0].contains("预设"), "got {:?}", eff.notes);
+    }
+
+    /// The presets pin one model id for every tier; a user must be able to replace it.
+    #[test]
+    fn model_override_is_reported_and_replaces_every_tier() {
+        let mut s = Settings::default();
+        s.model_override = "deepseek-chat".into();
+        let eff = describe(&s, false);
+        assert_eq!(eff.model, "deepseek-chat");
+        assert!(eff.notes.is_empty(), "got {:?}", eff.notes);
+
+        let yaml = render_config_yaml(&s, false);
+        assert!(yaml.contains("preset: deepseek"));
+        assert!(yaml.contains("model: \"deepseek-chat\""));
+        for profile in ["default_strong", "default_cheap", "default_fast"] {
+            assert!(yaml.contains(profile), "missing {profile}");
+        }
+        // The preset's older id must not survive anywhere in the document.
+        assert!(!yaml.contains("deepseek-flash"));
+    }
+
+    #[test]
+    fn model_override_applies_to_gemini_too() {
+        let mut s = Settings::default();
+        s.provider = "gemini".into();
+        s.model_override = "gemini-3.6-pro".into();
+        let yaml = render_config_yaml(&s, false);
+        assert!(yaml.contains("preset: gemini"));
+        assert!(yaml.contains("model: \"gemini-3.6-pro\""));
+        assert!(!yaml.contains("gemini-3.6-flash"));
+    }
+
+    #[test]
+    fn no_override_keeps_the_plain_preset() {
+        let yaml = render_config_yaml(&Settings::default(), false);
+        assert_eq!(yaml.matches("preset: deepseek").count(), 1);
+        assert!(!yaml.contains("default_strong"));
     }
 
     /// The exact situation that made a user believe their relay was in use when the app
@@ -430,13 +575,14 @@ mod tests {
         s.custom_base_url = "https://relay.example/v1".into();
         s.custom_model = "some-model".into();
         // provider stays "deepseek"
-        let eff = describe(&s);
+        let eff = describe(&s, false);
 
         assert!(eff.custom_fields_ignored);
         assert_eq!(eff.endpoint, "https://api.deepseek.com");
-        assert_eq!(eff.model, "deepseek-flash");
-        assert_eq!(eff.notes.len(), 1);
-        assert!(eff.notes[0].contains("ignored"));
+        assert!(eff.model.starts_with("deepseek-flash"), "got {}", eff.model);
+        // Two notes: the ignored custom fields, and the pinned preset model.
+        assert_eq!(eff.notes.len(), 2);
+        assert!(eff.notes[0].contains("忽略"), "got {:?}", eff.notes);
     }
 
     #[test]
@@ -446,30 +592,54 @@ mod tests {
         s.custom_base_url = "https://relay.example/v1".into();
         s.custom_model = "some-model".into();
         s.custom_key_env = "RELAY_KEY".into();
-        let eff = describe(&s);
+        // With a key stored there is nothing left to warn about.
+        let eff = describe(&s, true);
 
         assert!(!eff.custom_fields_ignored);
         assert_eq!(eff.endpoint, "https://relay.example/v1");
         assert_eq!(eff.model, "some-model");
         assert_eq!(eff.api_key_env, "RELAY_KEY");
-        assert!(eff.notes.is_empty());
+        assert!(eff.notes.is_empty(), "got {:?}", eff.notes);
+    }
+
+    /// A relay or cloud endpoint needs a key, and leaving one unsaved is the most common
+    /// way a custom configuration fails, so it is called out before the run is attempted.
+    #[test]
+    fn custom_provider_without_a_stored_key_is_called_out() {
+        let mut s = Settings::default();
+        s.provider = "custom".into();
+        s.custom_base_url = "https://relay.example/v1".into();
+        s.custom_model = "some-model".into();
+
+        // No variable name chosen: the note points at the key field, which is what the
+        // user can actually act on. Naming a variable they never picked would be noise.
+        let eff = describe(&s, false);
+        assert_eq!(eff.notes.len(), 1);
+        assert!(eff.notes[0].contains("尚未存入密钥"), "got {:?}", eff.notes);
+        assert_eq!(eff.api_key_env, DEFAULT_CUSTOM_KEY_ENV);
+
+        // With an explicit name, the note states what the key will be sent as.
+        s.custom_key_env = "RELAY_KEY".into();
+        let named = describe(&s, false);
+        assert!(named.notes[0].contains("RELAY_KEY"), "got {:?}", named.notes);
     }
 
     #[test]
     fn custom_provider_missing_fields_is_called_out() {
         let mut s = Settings::default();
         s.provider = "custom".into();
-        let eff = describe(&s);
-        assert_eq!(eff.endpoint, "(not set)");
-        assert_eq!(eff.model, "(not set)");
-        assert_eq!(eff.notes.len(), 2);
+        let eff = describe(&s, false);
+        assert_eq!(eff.endpoint, "(未填写)");
+        assert_eq!(eff.model, "(未填写)");
+        // Two missing-field notes plus the unsaved-key note.
+        assert_eq!(eff.notes.len(), 3);
     }
 
     #[test]
     fn gemini_describe_uses_its_own_key_variable() {
         let mut s = Settings::default();
         s.provider = "gemini".into();
-        let eff = describe(&s);
+        let eff = describe(&s, false);
         assert_eq!(eff.api_key_env, "GEMINI_API_KEY");
         assert_eq!(eff.provider_kind, "gemini");
     }

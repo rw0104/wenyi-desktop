@@ -24,6 +24,7 @@
     sourceLang: "auto",
     targetLang: "zh",
     provider: "deepseek",
+    modelOverride: "",
     customBaseUrl: "https://tokenrhythm.studio/v1",
     customModel: "deepseek-v4-pro-0813",
     customKeyEnv: "",
@@ -37,7 +38,7 @@
 
   const effective = {
     endpoint: "https://api.deepseek.com",
-    model: "deepseek-flash",
+    model: "deepseek-flash (预设默认，较旧)",
     providerKind: "deepseek",
     apiKeyEnv: "DEEPSEEK_API_KEY",
     customFieldsIgnored: true,
@@ -113,6 +114,12 @@
             return { DEEPSEEK_API_KEY: true, MINERU_API_KEY: false };
           case "get_effective_config":
             return effective;
+          case "list_models":
+            return {
+              ok: true,
+              models: ["deepseek-chat", "deepseek-reasoner", "deepseek-flash", "deepseek-v4-pro-0813"],
+              message: "共 4 个模型。",
+            };
           case "test_connection":
             return { ok: false, message: "The endpoint rejected the API key. Check that the key belongs to the endpoint shown above." };
           case "list_runs":

@@ -186,6 +186,25 @@
             </label>
           </div>
 
+          <!-- Built-in providers pin one model id in the engine preset; this replaces it. -->
+          <div class="row" id="model-row">
+            <label class="grow"
+              >模型 ID（留空则使用引擎预设默认）
+              <input
+                type="text"
+                id="model-override"
+                list="model-options"
+                placeholder="例如 deepseek-chat"
+                spellcheck="false"
+              />
+              <datalist id="model-options"></datalist>
+            </label>
+            <div class="key-actions">
+              <button id="fetch-models">获取模型列表</button>
+              <span id="models-status" class="muted" role="status" aria-live="polite"></span>
+            </div>
+          </div>
+
           <div id="custom-fields" hidden>
             <div class="row">
               <label class="grow"

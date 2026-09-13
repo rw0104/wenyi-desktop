@@ -109,7 +109,159 @@ pub const MINERU_KEY_ACCOUNT: &str = "MINERU_API_KEY";
 
 #[tauri::command]
 fn get_effective_config(settings: settings::Settings) -> settings::EffectiveConfig {
-    settings::describe(&settings)
+    let key_stored = secrets::get(&settings.api_key_env()).is_some();
+    settings::describe(&settings, key_stored)
+}
+
+/// Outcome of asking an endpoint which models it serves.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ModelList {
+    ok: bool,
+    models: Vec<String>,
+    message: String,
+}
+
+fn truncate(text: &str, limit: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= limit {
+        return trimmed.to_string();
+    }
+    trimmed.chars().take(limit).collect::<String>() + "..."
+}
+
+/// Extract model ids from an OpenAI-style `GET /models` body.
+///
+/// Returns `None` when the body is not a JSON object with a `data` array, which is how a
+/// relay that answers with an HTML error page or a bare message gets reported as such
+/// rather than as "zero models".
+fn parse_model_ids(body: &str) -> Option<Vec<String>> {
+    let parsed: serde_json::Value = serde_json::from_str(body).ok()?;
+    let rows = parsed.get("data")?.as_array()?;
+    let mut models: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.get("id").and_then(|v| v.as_str()))
+        .map(str::to_string)
+        .collect();
+    models.sort();
+    models.dedup();
+    Some(models)
+}
+
+/// Ask the configured endpoint which models it currently serves.
+///
+/// The built-in presets pin a single model id, so without this a user has no way to learn
+/// what the provider actually offers now. Uses the standard `GET /models` of the OpenAI
+/// protocol, which both DeepSeek and compatible relays implement.
+#[tauri::command]
+async fn list_models(
+    settings: settings::Settings,
+    ephemeral_api_key: Option<String>,
+) -> Result<ModelList, String> {
+    let base = match settings.provider.as_str() {
+        "custom" => settings
+            .custom_base_url
+            .trim()
+            .trim_end_matches('/')
+            .to_string(),
+        "gemini" => {
+            return Ok(ModelList {
+                ok: false,
+                models: Vec::new(),
+                message: "Gemini 使用不同的接口协议，暂不支持自动获取模型列表，请手动填写模型 ID。"
+                    .into(),
+            })
+        }
+        _ => "https://api.deepseek.com".to_string(),
+    };
+    if base.is_empty() {
+        return Ok(ModelList {
+            ok: false,
+            models: Vec::new(),
+            message: "请先填写接口地址 base_url。".into(),
+        });
+    }
+
+    let key = ephemeral_api_key
+        .map(|k| k.trim().to_string())
+        .filter(|k| !k.is_empty())
+        .or_else(|| secrets::get(&settings.api_key_env()));
+
+    let mut builder = reqwest::Client::builder().timeout(std::time::Duration::from_secs(30));
+    // Honour the configured proxy: the endpoint may only be reachable through it.
+    if !settings.proxy.trim().is_empty() {
+        match reqwest::Proxy::all(settings.proxy.trim()) {
+            Ok(proxy) => builder = builder.proxy(proxy),
+            Err(error) => {
+                return Ok(ModelList {
+                    ok: false,
+                    models: Vec::new(),
+                    message: format!("代理地址无效：{error}"),
+                })
+            }
+        }
+    }
+    let client = builder.build().map_err(|e| e.to_string())?;
+
+    let url = format!("{base}/models");
+    let mut request = client.get(&url);
+    if let Some(key) = key {
+        request = request.bearer_auth(key);
+    }
+
+    let response = match request.send().await {
+        Ok(response) => response,
+        Err(error) => {
+            return Ok(ModelList {
+                ok: false,
+                models: Vec::new(),
+                message: format!("无法连接 {url}：{error}。如果网络需要代理，请在设置里填写。"),
+            })
+        }
+    };
+
+    let status = response.status();
+    let body = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        let hint = match status.as_u16() {
+            401 | 403 => "接口拒绝了密钥：请确认密钥属于这个地址，并已存入凭据库。",
+            404 => "该地址没有 /models 接口（有些中转站不提供）。请手动填写模型 ID。",
+            _ => "请求失败。",
+        };
+        return Ok(ModelList {
+            ok: false,
+            models: Vec::new(),
+            message: format!("{hint}（HTTP {status}）{}", truncate(&body, 160)),
+        });
+    }
+
+    let models = match parse_model_ids(&body) {
+        Some(models) => models,
+        None => {
+            return Ok(ModelList {
+                ok: false,
+                models: Vec::new(),
+                message: format!(
+                    "接口返回的格式无法识别（没有 data[].id 列表）：{}",
+                    truncate(&body, 160)
+                ),
+            })
+        }
+    };
+
+    if models.is_empty() {
+        return Ok(ModelList {
+            ok: false,
+            models,
+            message: format!("接口没有返回任何模型：{}", truncate(&body, 160)),
+        });
+    }
+
+    Ok(ModelList {
+        ok: true,
+        message: format!("共 {} 个模型。", models.len()),
+        models,
+    })
 }
 
 #[tauri::command]
@@ -192,7 +344,11 @@ async fn test_connection(
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
 
     let config_path = dir.join("config.yaml");
-    std::fs::write(&config_path, settings::render_config_yaml(&user_settings))
+    let key_stored = secrets::get(&user_settings.api_key_env()).is_some();
+    std::fs::write(
+        &config_path,
+        settings::render_config_yaml(&user_settings, key_stored),
+    )
         .map_err(|e| e.to_string())?;
 
     let book_path = dir.join("connection-probe.txt");
@@ -290,32 +446,52 @@ async fn test_connection(
 /// message must point at a control in the app instead.
 fn explain_engine_error(detail: &str) -> String {
     let lower = detail.to_lowercase();
-    if lower.contains("mineru_api_key") || lower.contains("api token not provided") {
-        return format!(
-            "PDF input needs a MinerU key, which is separate from the translation model \
-             key. Add it under Settings. (engine: {detail})"
-        );
-    }
-    if lower.contains("401") || lower.contains("authentication") || lower.contains("invalid api key")
+    if lower.contains("source language detection failed")
+        || lower.contains("language detection failed")
     {
         return format!(
-            "The endpoint rejected the API key. Check that the key belongs to the \
-             endpoint shown above. (engine: {detail})"
+            "模型没有正常返回——在「语言检测」这一步就失败了。按可能性排序：\n\
+             1) 接口没收到密钥：中转站/云服务必须在设置里填入密钥并「存入凭据库」，密钥环境变量名留空\
+             不再等于「不发送密钥」，但仍需真的存过一把。\n\
+             2) 模型 ID 不被该接口接受：点「获取模型列表」核对。\n\
+             3) 网络到不了该接口：如需代理请在设置里填写。\n\
+             想跳过这一步，可以把「源语言」从『自动检测』改成具体语言。\n\
+             （引擎原文：{detail}）"
+        );
+    }
+    if lower.contains("mineru_api_key") || lower.contains("api token not provided") {
+        return format!(
+            "PDF 输入需要 MinerU 密钥，它和翻译模型密钥是两个东西。请到「设置 → PDF 输入所需\
+             （MinerU）」填入。若不想申请，可先把 PDF 转成 EPUB/DOCX/TXT。\n（引擎原文：{detail}）"
+        );
+    }
+    if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("authentication")
+        || lower.contains("invalid api key")
+    {
+        return format!(
+            "接口拒绝了密钥。请确认这把密钥属于「实际请求」那一行显示的地址（中转站的密钥不能用于\
+             官方端点，反之亦然）。\n（引擎原文：{detail}）"
         );
     }
     if lower.contains("model not exist") || lower.contains("model_not_found") {
         return format!(
-            "The endpoint does not recognise the configured model id. (engine: {detail})"
+            "接口不认识这个模型 ID。请点「获取模型列表」查看该接口真实提供的模型。\n\
+             （引擎原文：{detail}）"
         );
     }
-    if lower.contains("connection") || lower.contains("timeout") || lower.contains("dns") {
+    if lower.contains("connection")
+        || lower.contains("timeout")
+        || lower.contains("dns")
+        || lower.contains("connect")
+    {
         return format!(
-            "Could not reach the endpoint. If your network needs a proxy, set it under \
-             Settings. (engine: {detail})"
+            "连不上接口。如果本机网络需要代理，请在设置里填写代理地址。\n（引擎原文：{detail}）"
         );
     }
     if lower.contains("no module named") {
-        return format!("The bundled engine is incomplete: {detail}");
+        return format!("打包的引擎不完整：{detail}");
     }
     detail.to_string()
 }
@@ -420,7 +596,8 @@ async fn run_engine(
 
     let user_settings = settings::load(&app)?;
     // Keep config.yaml in step with settings even if the UI never pressed Save.
-    settings::write_engine_config(&app, &user_settings)?;
+    let key_stored = secrets::get(&user_settings.api_key_env()).is_some();
+    settings::write_engine_config(&app, &user_settings, key_stored)?;
 
     let workspace = settings::workspace_dir(&app)?;
     let config_path = settings::config_file(&app)?;
@@ -541,6 +718,7 @@ pub fn run() {
             load_settings,
             save_settings,
             get_effective_config,
+            list_models,
             set_api_key,
             clear_api_key,
             api_key_status,
@@ -594,6 +772,45 @@ mod tests {
         }
     }
 
+    #[test]
+    fn parses_the_openai_models_shape() {
+        let body = r#"{"object":"list","data":[{"id":"deepseek-reasoner"},{"id":"deepseek-chat"}]}"#;
+        assert_eq!(
+            parse_model_ids(body),
+            Some(vec!["deepseek-chat".to_string(), "deepseek-reasoner".to_string()])
+        );
+    }
+
+    #[test]
+    fn model_ids_are_sorted_and_deduplicated() {
+        let body = r#"{"data":[{"id":"b"},{"id":"a"},{"id":"b"}]}"#;
+        assert_eq!(
+            parse_model_ids(body),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+    }
+
+    /// A relay answering with an error message or HTML must read as unparseable, not as an
+    /// endpoint that serves zero models.
+    #[test]
+    fn unrecognised_bodies_are_rejected() {
+        assert_eq!(parse_model_ids("<html>502 Bad Gateway</html>"), None);
+        assert_eq!(parse_model_ids(r#"{"error":"invalid key"}"#), None);
+        assert_eq!(parse_model_ids(r#"{"data":"not-an-array"}"#), None);
+        assert_eq!(parse_model_ids(""), None);
+    }
+
+    /// An empty but well-formed list is "no models", which is distinct from unparseable.
+    #[test]
+    fn well_formed_empty_list_yields_no_models() {
+        assert_eq!(parse_model_ids(r#"{"data":[]}"#), Some(Vec::new()));
+    }
+
+    #[test]
+    fn truncate_keeps_short_text_and_marks_long_text() {
+        assert_eq!(truncate("hello", 10), "hello");
+        assert_eq!(truncate("hello world", 5), "hello...");
+    }
     #[test]
     fn engine_args_work_without_flags() {
         let args = build_engine_args("prepare", "in.txt", "/cfg.yaml", &[]);
