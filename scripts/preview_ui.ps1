@@ -59,25 +59,38 @@ $staged = Join-Path $Stage "index.html"
 
 # Guard the guard: verify the staged page survived the encoding round trip before rendering.
 # A preview that documents mojibake is worse than no preview, because it looks authoritative.
-# The character class below is written as \uXXXX escapes so this script stays pure ASCII:
-# PowerShell 5.1 reads a BOM-less .ps1 as the ANSI codepage, so non-ASCII here would itself
-# be mangled. Those code points are the signature of UTF-8 bytes decoded as GBK.
-# Rather than guess at mojibake code points, take a sample of the source page's own
-# non-ASCII text and demand the staged page still contains it verbatim. Sampling at runtime
-# keeps this script pure ASCII, which it must be: PowerShell 5.1 reads a BOM-less .ps1 as
-# the ANSI codepage, so non-ASCII here would corrupt the checker itself.
+# Samples are taken at runtime from the source page, which keeps this script pure ASCII --
+# PowerShell 5.1 reads a BOM-less .ps1 as the ANSI codepage, so non-ASCII here would corrupt
+# the checker itself. They are also taken per panel: comparing the settings screen against
+# text that only exists on the translate screen proves nothing either way.
 $check = [System.IO.File]::ReadAllText($staged, [System.Text.Encoding]::UTF8)
 $source = [System.IO.File]::ReadAllText((Join-Path $UiDir "index.html"), [System.Text.Encoding]::UTF8)
-$samples = [regex]::Matches($source, '>([^<>\x00-\x7F]{3,14})<') |
-    ForEach-Object { $_.Groups[1].Value.Trim() } |
-    Where-Object { $_.Length -ge 3 } |
-    Select-Object -Unique -First 5
-if ($samples.Count -eq 0) { throw "No non-ASCII sample found in the source page." }
-$missing = @($samples | Where-Object { -not $check.Contains($_) })
-if ($missing.Count -gt 0) {
-    throw "Staged page lost its text: $($missing.Count)/$($samples.Count) samples missing (encoding round trip failed)."
+
+function Get-PanelSamples {
+    param([string]$Html, [string]$Tab, [int]$Count = 6)
+    $marker = 'id="panel-' + $Tab + '"'
+    $from = $Html.IndexOf($marker)
+    if ($from -lt 0) { return @() }
+    $rest = $Html.Substring($from)
+    $next = $rest.IndexOf('id="panel-', 1)
+    if ($next -gt 0) { $rest = $rest.Substring(0, $next) }
+    return @([regex]::Matches($rest, '>([^<>\x00-\x7F]{3,16})<') |
+        ForEach-Object { $_.Groups[1].Value.Trim() } |
+        Where-Object { $_.Length -ge 3 } |
+        Select-Object -Unique -First $Count)
 }
-Write-Host "staged page verified: $($samples.Count) text samples intact"
+
+$allSamples = Get-PanelSamples -Html $source -Tab "translate"
+if ($allSamples.Count -eq 0) { throw "No non-ASCII sample found in the source page." }
+# Every sample must survive into the staged page, for every panel the preview can show.
+foreach ($tab in @("translate", "settings", "resume")) {
+    $panelSamples = Get-PanelSamples -Html $source -Tab $tab
+    $lost = @($panelSamples | Where-Object { -not $check.Contains($_) })
+    if ($lost.Count -gt 0) {
+        throw "Staged page lost $($lost.Count) sample(s) from the $tab panel (encoding round trip failed)."
+    }
+}
+Write-Host "staged page verified: all panel text survived staging"
 
 $page = "file:///" + ((Join-Path $Stage "index.html") -replace '\\', '/')
 
@@ -169,9 +182,11 @@ $settings = Invoke-Shot -Name "wenyi-settings" -Tab "settings"
 
 # Read the images back so a stale or broken render cannot be published silently. The ASCII
 # markers identify current content: a cached older render would not contain them.
-Assert-ShotText -Shot $light -Label "shelf (light)" -Samples $samples `
+Assert-ShotText -Shot $light -Label "shelf (light)" `
+    -Samples (Get-PanelSamples -Html $source -Tab "translate") `
     -AsciiMarkers @("TheEconomist", "MiddleEast")
-Assert-ShotText -Shot $settings -Label "settings" -Samples $samples `
+Assert-ShotText -Shot $settings -Label "settings" `
+    -Samples (Get-PanelSamples -Html $source -Tab "settings") `
     -AsciiMarkers @("tokenrhythm", "deepseek-v4-pro-0813")
 
 # Report the sampled background pixel so the colour scheme is verifiable, not assumed.
