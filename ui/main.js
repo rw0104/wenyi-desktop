@@ -235,6 +235,22 @@ async function refreshKeyStatus() {
 }
 
 let refreshModelKeyStatus = async () => {};
+
+// Log milestones. The log is how a user tells a long run is alive, so routine progress must
+// appear there -- but logging every batch would flood it (hundreds of requests per book), so
+// only chapter transitions, ten-percent crossings and the resume point are reported.
+let progressLog = { label: "", milestone: -1, resumed: false };
+
+function resetProgressLog() {
+  progressLog = { label: "", milestone: -1, resumed: false };
+}
+
+/** Report a stage as it starts, but never repeat the same one. */
+function noteStage(label) {
+  if (!label || label === progressLog.label) return;
+  progressLog.label = label;
+  log(`阶段：${label}`);
+}
 let refreshMineruStatus = async () => {};
 
 /**
@@ -415,6 +431,7 @@ async function startRun(command) {
     return;
   }
   clearLog();
+  resetProgressLog();
   $("output-actions").hidden = true;
   state.lastOutputs = [];
   setProgress(0);
@@ -455,14 +472,35 @@ function handleEvent(payload) {
     case "stage":
       $("progress-label").textContent = payload.label || "";
       setProgress(null);
+      noteStage(payload.label);
       if (payload.label) announce(payload.label);
       break;
     case "progress": {
       const total = payload.total || 0;
       const done = payload.done || 0;
+      const label = payload.label || "";
       setProgress(total > 0 ? done / total : null);
-      $("progress-label").textContent =
-        `${payload.label || ""}${total > 0 ? ` (${done}/${total})` : ""}`;
+      $("progress-label").textContent = `${label}${total > 0 ? ` (${done}/${total})` : ""}`;
+
+      // The first count on a resumed run is the work already on disk, which answers
+      // "did my resume actually pick up where it left off?".
+      if (!progressLog.resumed && total > 0) {
+        progressLog.resumed = true;
+        if (done > 0) {
+          log(`已从 ${done}/${total} 继续（${Math.round((done / total) * 100)}%），前序内容不会重译`);
+        }
+      }
+      if (label && label !== progressLog.label) {
+        progressLog.label = label;
+        log(`开始翻译：${label}`, "done");
+      }
+      if (total > 0) {
+        const milestone = Math.floor((done / total) * 10);
+        if (milestone > progressLog.milestone) {
+          progressLog.milestone = milestone;
+          if (milestone > 0) log(`进度 ${milestone * 10}% (${done}/${total})`);
+        }
+      }
       break;
     }
     case "usage": {
