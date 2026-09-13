@@ -19,6 +19,12 @@
 
 ## 界面预览
 
+安装后的真实窗口（本机系统为浅色主题，应用正确跟随）：
+
+![成品应用窗口](docs/images/ui-app-window.png)
+
+浏览器内渲染的双主题：
+
 ![深色](docs/images/ui-dark.png)
 ![浅色](docs/images/ui-light.png)
 

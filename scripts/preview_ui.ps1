@@ -2,7 +2,7 @@
 #
 # The frontend only depends on `window.__TAURI__.core.invoke` and `...event.listen`, so
 # stubbing those (scripts/ui_preview_shim.js) renders the actual markup and CSS in a plain
-# browser — no build, no running application, no API key.
+# browser -- no build, no running application, no API key.
 #
 # Captures both colour schemes. Chrome/Edge report `prefers-color-scheme: light` by
 # default in headless mode; `--force-dark-mode` switches the media query to dark.

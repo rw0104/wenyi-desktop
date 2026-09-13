@@ -1,6 +1,6 @@
 # End-to-end verification of the desktop pipeline, driven exactly as the app drives it.
 #
-# Exercises the real path — sidecar → engine → HTTP → translated book — without a paid
+# Exercises the real path -- sidecar -> engine -> HTTP -> translated book -- without a paid
 # API key, by pointing the engine at scripts/mock_llm.py.
 #
 # This is the check that catches what compiling and unit tests cannot: argument ordering,

@@ -1,7 +1,7 @@
 # Fetch and prepare a complete Wenyi engine checkout for Wenyi Desktop.
 #
 # Clones the upstream repository at the exact revision this repository's P0 patch was
-# generated against, then applies the patch. The result is a full, buildable engine —
+# generated against, then applies the patch. The result is a full, buildable engine --
 # no manual steps and no dependency on anyone's working tree.
 #
 # Usage:
