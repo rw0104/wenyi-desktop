@@ -319,6 +319,11 @@
       clipped: wide.slice(0, 6),
       overflowSources: leaves.slice(0, 6),
       chromeDirection: chrome ? getComputedStyle(chrome).flexDirection : null,
+      // Overflow is only half the question. A capped, un-centred column leaves the window
+      // half empty on a maximised window - the content "does not adapt" - and nothing that
+      // only looks for overflow will ever notice.
+      mainWidth: main ? Math.round(main.getBoundingClientRect().width) : null,
+      viewportWidth: doc.clientWidth,
       // The shelf only exists on one panel. Reporting its box while that panel is hidden
       // would print a number that looks like a measurement but is not one.
       coverWidth: visible(cover) ? Math.round(cover.getBoundingClientRect().width) : null,

@@ -81,9 +81,9 @@ foreach ($bookCount in $Books) {
             $page = "file:///" + ($staged -replace '\\', '/')
 
             Write-Host "  text size ${scalePct}%"
-            Write-Host ("  {0,-11} {1,-10} {2,5} {3,7} {4,7} {5,8} {6,7} {7,6}  {8}" -f `
-                "requested", "viewport", "root", "ovfl", "clip", "chrome", "cover", "cols", "verdict")
-            Write-Host ("  " + "-" * 86)
+            Write-Host ("  {0,-11} {1,-10} {2,5} {3,7} {4,8} {5,9} {6,7} {7,6} {8,5}  {9}" -f `
+                "requested", "viewport", "root", "ovfl", "clip", "chrome", "cover", "cols", "fill", "verdict")
+            Write-Host ("  " + "-" * 90)
 
             foreach ($sizeSpec in $Sizes) {
                 $dims = $sizeSpec.Split("x")
@@ -121,12 +121,25 @@ foreach ($bookCount in $Books) {
                 $expectedRoot = [Math]::Round(16 * $scalePct / 100, 1)
                 $scaleApplied = [Math]::Abs($probe.rootFontSize - $expectedRoot) -lt 1.5
 
+                # Content must also *use* the window. A column capped below the viewport and
+                # left-aligned passes every overflow test while leaving the right half of a
+                # maximised window empty - which is exactly what "it does not adapt" looked
+                # like in practice. `main` is allowed to stop at 120rem, and only there.
+                $expectedMain = [Math]::Min([double]$probe.viewportWidth, 120 * $probe.rootFontSize)
+                $fillPct = if ($expectedMain -gt 0) { [Math]::Round(100 * $probe.mainWidth / $expectedMain) } else { 0 }
+                $filled = $probe.mainWidth -ge ($expectedMain - 4)
+
                 # A viewport narrower than requested means the browser clamped the window, not
                 # that the layout failed; content must fit the viewport it actually got.
-                $verdict = if ($probe.overflowPx -le 1 -and $probe.clippedCount -eq 0 -and $scaleApplied) { "ok" } else { "OVERFLOW" }
+                $overflowed = $probe.overflowPx -gt 1 -or $probe.clippedCount -gt 0
+                $verdict = if (-not $scaleApplied) { "NOSCALE" }
+                           elseif ($overflowed) { "OVERFLOW" }
+                           elseif (-not $filled) { "UNDERFILL" }
+                           else { "ok" }
                 if ($verdict -ne "ok") {
                     $why = if (-not $scaleApplied) { "text scale did not apply (root $($probe.rootFontSize)px)" }
-                           else { "overflow $($probe.overflowPx)px, clipped: $($probe.clipped -join ', ')" }
+                           elseif ($overflowed) { "overflow $($probe.overflowPx)px, clipped: $($probe.clipped -join ', ')" }
+                           else { "content uses only $fillPct% of the window ($($probe.mainWidth) of $expectedMain px)" }
                     $failures += "$bookCount book(s), $tabName ${scalePct}% $sizeSpec : $why"
                 }
 
@@ -134,9 +147,9 @@ foreach ($bookCount in $Books) {
                 # are absent, not measured-as-nothing.
                 $coverText = if ($null -eq $probe.coverWidth) { "-" } else { "$($probe.coverWidth)" }
                 $colsText = if ($null -eq $probe.shelfColumns) { "-" } else { "$($probe.shelfColumns)" }
-                Write-Host ("  {0,-11} {1,-10} {2,5} {3,5}px {4,7} {5,8} {6,7} {7,6}  {8}" -f `
+                Write-Host ("  {0,-11} {1,-10} {2,5} {3,5}px {4,8} {5,9} {6,7} {7,6} {8,4}%  {9}" -f `
                     $sizeSpec, $probe.viewport, $probe.rootFontSize, $probe.overflowPx, $probe.clippedCount,
-                    $probe.chromeDirection, $coverText, $colsText, $verdict)
+                    $probe.chromeDirection, $coverText, $colsText, $fillPct, $verdict)
             }
             Write-Host ""
         }

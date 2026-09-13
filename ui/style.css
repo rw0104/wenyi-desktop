@@ -276,7 +276,14 @@ main {
   padding: 1.5rem 2rem 3rem;
   display: grid;
   gap: 1rem;
-  max-width: 68rem;
+  /* Fill the window, and centre only past the point where a single column would stop being
+   * readable. A fixed cap with no centring left the right half of a maximised window empty:
+   * the header stretched to the window edge while the content stopped a third of the way
+   * across, which reads as the main area refusing to adapt. This is the same cap the
+   * widest-window rule used to impose, just raised past any realistic window.
+   */
+  max-width: 120rem;
+  margin-inline: auto;
 }
 
 .panel {
@@ -1096,9 +1103,6 @@ dl.kv dd {
 
 /* Wide windows: spend the room on the shelf rather than leaving a narrow column. */
 @media (min-width: 90rem) {
-  main {
-    max-width: 84rem;
-  }
   .shelf {
     grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr));
     gap: 1.5rem 1.25rem;
