@@ -172,13 +172,19 @@ def build_epub(path: str) -> None:
 
 
 def build_txt(path: str) -> None:
-    """A plain-text twin: the simplest possible input, needing no parsing at all."""
+    """A plain-text twin: the simplest possible input, needing no parsing at all.
+
+    Paragraphs are separated by blank lines. Without them a plain-text reader merges
+    consecutive lines into a single paragraph, silently collapsing a chapter into one
+    block -- which looks like a translation defect when the input was the problem.
+    """
     lines = []
     for title, paragraphs in CHAPTERS:
         lines.append(title)
         lines.append("")
-        lines.extend(paragraphs)
-        lines.append("")
+        for paragraph in paragraphs:
+            lines.append(paragraph)
+            lines.append("")
     text = "\n".join(lines).replace("&ldquo;", '"').replace("&rdquo;", '"')
     with open(path, "w", encoding="utf-8") as f:
         f.write(text)
